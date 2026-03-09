@@ -1,6 +1,6 @@
 """Tests for embeddings module."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import numpy as np
 import pytest
@@ -143,3 +143,154 @@ class TestEmbeddingProvider:
         
         with pytest.raises(Exception, match="Encoding failed"):
             provider.encode("test text")
+
+
+class TestUniXCoderEmbeddingProvider:
+    """Test EmbeddingProvider with transformers backend (unixcoder-base)."""
+
+    @patch("codebase_rag.embeddings.SentenceTransformer")
+    def test_init_uses_sentence_transformers_backend_for_default(self, mock_st):
+        """Default model uses sentence_transformers backend, not transformers."""
+        mock_st.return_value = Mock()
+
+        from codebase_rag.embeddings import EmbeddingProvider
+        provider = EmbeddingProvider()
+
+        assert provider._backend == "sentence_transformers"
+        mock_st.assert_called_once()
+
+    @patch("codebase_rag.embeddings.AutoModel")
+    @patch("codebase_rag.embeddings.AutoTokenizer")
+    @patch("codebase_rag.embeddings.SentenceTransformer")
+    def test_init_uses_transformers_backend_for_unixcoder(self, mock_st, mock_tok, mock_model):
+        """microsoft/unixcoder-base uses transformers backend, not SentenceTransformer."""
+        mock_tok.from_pretrained.return_value = Mock()
+        mock_model.from_pretrained.return_value = Mock()
+
+        from codebase_rag.embeddings import EmbeddingProvider
+        provider = EmbeddingProvider(model_name="microsoft/unixcoder-base")
+
+        assert provider._backend == "transformers"
+        mock_st.assert_not_called()
+        mock_tok.from_pretrained.assert_called_once_with("microsoft/unixcoder-base")
+        mock_model.from_pretrained.assert_called_once_with("microsoft/unixcoder-base")
+
+    @patch("codebase_rag.embeddings.AutoModel")
+    @patch("codebase_rag.embeddings.AutoTokenizer")
+    @patch("codebase_rag.embeddings.SentenceTransformer")
+    def test_encode_unixcoder_returns_2d_numpy_array(self, mock_st, mock_tok, mock_automodel):
+        """Encoding with unixcoder backend returns 2D numpy array."""
+        import torch
+
+        mock_tokenizer = Mock()
+        mock_tok.from_pretrained.return_value = mock_tokenizer
+
+        seq_len, hidden_size = 10, 768
+        last_hidden = torch.ones(1, seq_len, hidden_size)
+        attention_mask = torch.ones(1, seq_len, dtype=torch.long)
+        mock_tokenizer.return_value = {"attention_mask": attention_mask}
+
+        mock_transformer = Mock()
+        mock_transformer.eval.return_value = None
+        outputs = Mock()
+        outputs.last_hidden_state = last_hidden
+        mock_transformer.return_value = outputs
+        mock_automodel.from_pretrained.return_value = mock_transformer
+
+        from codebase_rag.embeddings import EmbeddingProvider
+        provider = EmbeddingProvider(model_name="microsoft/unixcoder-base")
+        result = provider.encode("def foo(): pass")
+
+        assert isinstance(result, np.ndarray)
+        assert result.ndim == 2
+        assert result.shape == (1, hidden_size)
+
+    @patch("codebase_rag.embeddings.AutoModel")
+    @patch("codebase_rag.embeddings.AutoTokenizer")
+    @patch("codebase_rag.embeddings.SentenceTransformer")
+    def test_encode_unixcoder_wraps_single_string_in_list(self, mock_st, mock_tok, mock_automodel):
+        """Single string input is handled correctly (wrapped internally)."""
+        import torch
+
+        mock_tokenizer = Mock()
+        mock_tok.from_pretrained.return_value = mock_tokenizer
+
+        hidden_size = 768
+        last_hidden = torch.ones(1, 5, hidden_size)
+        attention_mask = torch.ones(1, 5, dtype=torch.long)
+        mock_tokenizer.return_value = {"attention_mask": attention_mask}
+
+        mock_transformer = Mock()
+        mock_transformer.eval.return_value = None
+        outputs = Mock()
+        outputs.last_hidden_state = last_hidden
+        mock_transformer.return_value = outputs
+        mock_automodel.from_pretrained.return_value = mock_transformer
+
+        from codebase_rag.embeddings import EmbeddingProvider
+        provider = EmbeddingProvider(model_name="microsoft/unixcoder-base")
+        result = provider.encode("single string")
+
+        # Tokenizer must have been called with a list
+        call_args = mock_tokenizer.call_args
+        assert isinstance(call_args[0][0], list)
+        assert result.shape[0] == 1
+
+    @patch("codebase_rag.embeddings.AutoModel")
+    @patch("codebase_rag.embeddings.AutoTokenizer")
+    @patch("codebase_rag.embeddings.SentenceTransformer")
+    def test_encode_unixcoder_normalizes_embeddings(self, mock_st, mock_tok, mock_automodel):
+        """normalize_embeddings=True produces unit-norm vectors."""
+        import torch
+
+        mock_tokenizer = Mock()
+        mock_tok.from_pretrained.return_value = mock_tokenizer
+
+        hidden_size = 4
+        # Make last_hidden state such that mean pooling gives [3, 4, 0, 0]
+        # which has norm 5 → normalized: [0.6, 0.8, 0, 0]
+        embeddings_raw = torch.tensor([[[3.0, 4.0, 0.0, 0.0]] * 3])  # (1, 3, 4)
+        attention_mask = torch.ones(1, 3, dtype=torch.long)
+        mock_tokenizer.return_value = {"attention_mask": attention_mask}
+
+        mock_transformer = Mock()
+        mock_transformer.eval.return_value = None
+        outputs = Mock()
+        outputs.last_hidden_state = embeddings_raw
+        mock_transformer.return_value = outputs
+        mock_automodel.from_pretrained.return_value = mock_transformer
+
+        from codebase_rag.embeddings import EmbeddingProvider
+        provider = EmbeddingProvider(model_name="microsoft/unixcoder-base")
+        result = provider.encode("code", normalize_embeddings=True)
+
+        norms = np.linalg.norm(result, axis=1)
+        np.testing.assert_allclose(norms, [1.0], atol=1e-6)
+
+    @patch("codebase_rag.embeddings.AutoModel")
+    @patch("codebase_rag.embeddings.AutoTokenizer")
+    @patch("codebase_rag.embeddings.SentenceTransformer")
+    def test_encode_unixcoder_multiple_texts(self, mock_st, mock_tok, mock_automodel):
+        """Encoding multiple texts returns correct batch shape."""
+        import torch
+
+        mock_tokenizer = Mock()
+        mock_tok.from_pretrained.return_value = mock_tokenizer
+
+        batch, seq_len, hidden_size = 3, 8, 768
+        last_hidden = torch.ones(batch, seq_len, hidden_size)
+        attention_mask = torch.ones(batch, seq_len, dtype=torch.long)
+        mock_tokenizer.return_value = {"attention_mask": attention_mask}
+
+        mock_transformer = Mock()
+        mock_transformer.eval.return_value = None
+        outputs = Mock()
+        outputs.last_hidden_state = last_hidden
+        mock_transformer.return_value = outputs
+        mock_automodel.from_pretrained.return_value = mock_transformer
+
+        from codebase_rag.embeddings import EmbeddingProvider
+        provider = EmbeddingProvider(model_name="microsoft/unixcoder-base")
+        result = provider.encode(["def foo():", "class Bar:", "import os"])
+
+        assert result.shape == (batch, hidden_size)
