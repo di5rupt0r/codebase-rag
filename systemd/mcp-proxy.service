@@ -6,8 +6,7 @@ Requires=codebase-rag-server.service
 [Service]
 Type=simple
 User=gabrielsb
-EnvironmentFile=/home/gabrielsb/.config/mcp-proxy/.env
-ExecStart=/home/gabrielsb/.local/bin/mcp-proxy --config /home/gabrielsb/.config/mcp-proxy/config.json
+ExecStart=/home/gabrielsb/.local/bin/mcp-proxy --port 8080 -- /home/gabrielsb/.local/bin/uv run --directory /home/gabrielsb/mcp-servers/codebase-rag python main.py
 Restart=always
 RestartSec=5s
 StandardOutput=journal
