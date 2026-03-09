@@ -11,6 +11,7 @@ from .indexer import (
     list_indexed_files as _list_indexed_files,
     get_file_content as _get_file_content,
     index_codebase as _index_codebase,
+    _get_client,
 )
 
 
@@ -97,14 +98,13 @@ def reindex_project(
         
         collection_name = project_name
         
-        # If force is True, delete existing collection
+        # If force is True, delete existing collection before re-indexing
         if force:
             try:
-                client = _search_codebase.__globals__["_get_client"]()
-                collection = client.get_collection(name=collection_name)
+                client = _get_client()
                 client.delete_collection(name=collection_name)
             except Exception:
-                # Collection might not exist, ignore
+                # Collection might not exist — ignore
                 pass
         
         # Count files before indexing
@@ -136,27 +136,35 @@ def reindex_project(
 @mcp.tool()
 def list_indexed_projects() -> Dict[str, Any]:
     """List all projects that have been indexed.
-    
+
     Returns:
         Dictionary with list of indexed projects and their metadata
     """
     try:
-        # This is a simplified implementation - in a full version,
-        # we would scan all collections in ChromaDB
-        default_files = _list_indexed_files(collection_name="codebase-rag")
-        
-        # For now, return the default collection
-        # TODO: Implement proper collection scanning
-        projects = [
-            {
-                "name": "default",
-                "path": "N/A",
-                "files": len(default_files),
-                "chunks": len(default_files),  # Approximation
-                "last_indexed": "Unknown",
-            }
-        ]
-        
+        client = _get_client()
+        collections = client.list_collections()
+
+        projects = []
+        for col in collections:
+            col_obj = client.get_collection(col.name)
+            result = col_obj.get(include=["metadatas"])
+            metadatas = result.get("metadatas") or []
+
+            files: set = set()
+            for meta in metadatas:
+                if meta and meta.get("path"):
+                    files.add(meta["path"])
+
+            projects.append(
+                {
+                    "name": col.name,
+                    "path": "N/A",
+                    "files": len(files),
+                    "chunks": len(metadatas),
+                    "last_indexed": "Unknown",
+                }
+            )
+
         return {
             "projects": projects,
             "total_projects": len(projects),
