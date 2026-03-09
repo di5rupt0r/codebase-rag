@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Dict, Any, Optional
 
+import numpy as np
 import chromadb
 from chromadb.api.models import Collection
 
@@ -129,7 +130,9 @@ def index_codebase(
     for i in range(0, len(documents), batch_size):
         batch_docs = documents[i : i + batch_size]
         batch_embeddings = provider.encode(batch_docs)
-        # Ensure 2D array
+        # Ensure 2D numpy array, then convert to list
+        if not isinstance(batch_embeddings, np.ndarray):
+            batch_embeddings = np.array(batch_embeddings)
         if batch_embeddings.ndim == 1:
             batch_embeddings = batch_embeddings.reshape(1, -1)
         embeddings.extend(batch_embeddings.astype("float32").tolist())
@@ -184,6 +187,9 @@ def search_codebase(
     collection = _get_collection(client, collection_name)
 
     query_embedding = provider.encode([query])
+    # Ensure numpy array
+    if not isinstance(query_embedding, np.ndarray):
+        query_embedding = np.array(query_embedding)
     if query_embedding.ndim == 1:
         query_embedding = query_embedding.reshape(1, -1)
 
