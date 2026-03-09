@@ -1,0 +1,24 @@
+[Unit]
+Description=MCP Codebase RAG Server (streamable-http)
+After=network.target
+
+[Service]
+Type=simple
+# Replace YOUR_USERNAME with your Linux username
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/mcp-servers/codebase-rag
+Environment="PATH=/home/YOUR_USERNAME/.local/bin:/usr/local/bin:/usr/bin"
+Environment="CHROMA_DB_PATH=/home/YOUR_USERNAME/mcp-servers/codebase-rag/data/chroma_db"
+Environment="MCP_TRANSPORT=streamable-http"
+Environment="MCP_HOST=127.0.0.1"
+Environment="MCP_PORT=8080"
+# Optional: restrict accepted Host header (useful if exposed via reverse proxy or Tailscale)
+# Environment="MCP_ALLOWED_HOST=YOUR_HOSTNAME"
+ExecStart=/home/YOUR_USERNAME/.local/bin/codebase-rag
+Restart=always
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

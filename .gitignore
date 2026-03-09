@@ -11,3 +11,6 @@ wheels/
 
 # ChromaDB index (local, machine-specific — not portable across environments)
 data/chroma_db/
+
+# Systemd service file — contains machine-specific paths; use the .template instead
+systemd/codebase-rag-server.service
