@@ -115,28 +115,23 @@ class TestReindexProject:
         assert "does not exist" in result["error"]
         assert result["time_seconds"] == 0
 
+    @patch("codebase_rag.server._get_client")
     @patch("codebase_rag.server._index_codebase")
     @patch("codebase_rag.server._list_indexed_files")
-    @patch("codebase_rag.server._search_codebase")
-    def test_reindex_project_with_force(self, mock_search, mock_list_files, mock_index):
-        """Test reindexing with force=True."""
-        # Mock the client and collection for deletion
+    def test_reindex_project_with_force(self, mock_list_files, mock_index, mock_get_client):
+        """Test reindexing with force=True deletes existing collection."""
         mock_client = Mock()
-        mock_collection = Mock()
-        mock_client.get_collection.return_value = mock_collection
-        
-        # Patch the _get_client function
-        with patch("codebase_rag.server._search_codebase") as mock_search_func:
-            mock_search_func.__globals__ = {"_get_client": lambda: mock_client}
-            
-            mock_index.return_value = 5
-            mock_list_files.return_value = [{"path": "file1.py"}]
-            
-            with TemporaryDirectory() as tmp_dir:
-                result = reindex_project(tmp_dir, "test-project", force=True)
-                
-                assert result["status"] == "success"
-                assert result["force_used"] is True
+        mock_get_client.return_value = mock_client
+        mock_index.return_value = 5
+        mock_list_files.return_value = [{"path": "file1.py"}]
+
+        with TemporaryDirectory() as tmp_dir:
+            result = reindex_project(tmp_dir, "test-project", force=True)
+
+            assert result["status"] == "success"
+            assert result["force_used"] is True
+            # delete_collection must have been attempted
+            mock_client.delete_collection.assert_called_once_with(name="test-project")
 
     @patch("codebase_rag.server._index_codebase")
     def test_reindex_project_error_handling(self, mock_index):
@@ -154,42 +149,54 @@ class TestReindexProject:
 class TestListIndexedProjects:
     """Test list_indexed_projects MCP tool."""
 
-    @patch("codebase_rag.server._list_indexed_files")
-    def test_list_indexed_projects_basic(self, mock_list_files):
-        """Test basic project listing."""
-        mock_list_files.return_value = [
-            {"path": "file1.py"},
-            {"path": "file2.py"},
-        ]
-        
+    @patch("codebase_rag.server._get_client")
+    def test_list_indexed_projects_basic(self, mock_get_client):
+        """Test project listing enumerates real ChromaDB collections."""
+        mock_client = Mock()
+        mock_get_client.return_value = mock_client
+
+        mock_col = Mock()
+        mock_col.name = "my-project"
+        mock_client.list_collections.return_value = [mock_col]
+
+        mock_col_obj = Mock()
+        mock_client.get_collection.return_value = mock_col_obj
+        mock_col_obj.get.return_value = {
+            "metadatas": [
+                {"path": "/src/file1.py"},
+                {"path": "/src/file2.py"},
+                {"path": "/src/file1.py"},  # duplicate chunk of same file
+            ]
+        }
+
         result = list_indexed_projects()
-        
-        assert "projects" in result
-        assert "total_projects" in result
-        assert len(result["projects"]) == 1
-        assert result["projects"][0]["name"] == "default"
-        assert result["projects"][0]["files"] == 2
+
         assert result["total_projects"] == 1
+        project = result["projects"][0]
+        assert project["name"] == "my-project"
+        assert project["files"] == 2   # unique paths
+        assert project["chunks"] == 3  # total metadata entries
 
-    @patch("codebase_rag.server._list_indexed_files")
-    def test_list_indexed_projects_empty(self, mock_list_files):
-        """Test listing with no indexed files."""
-        mock_list_files.return_value = []
-        
+    @patch("codebase_rag.server._get_client")
+    def test_list_indexed_projects_empty(self, mock_get_client):
+        """Test listing with no indexed collections."""
+        mock_client = Mock()
+        mock_get_client.return_value = mock_client
+        mock_client.list_collections.return_value = []
+
         result = list_indexed_projects()
-        
-        assert len(result["projects"]) == 1
-        assert result["projects"][0]["files"] == 0
 
-    @patch("codebase_rag.server._list_indexed_files")
-    def test_list_indexed_projects_error(self, mock_list_files):
+        assert result["total_projects"] == 0
+        assert result["projects"] == []
+
+    @patch("codebase_rag.server._get_client")
+    def test_list_indexed_projects_error(self, mock_get_client):
         """Test error handling in project listing."""
-        mock_list_files.side_effect = Exception("List failed")
-        
+        mock_get_client.side_effect = Exception("Connection failed")
+
         result = list_indexed_projects()
-        
+
         assert "error" in result
-        assert result["error"] == "List failed"
         assert result["projects"] == []
         assert result["total_projects"] == 0
 
