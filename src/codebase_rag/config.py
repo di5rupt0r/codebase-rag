@@ -10,6 +10,8 @@ from typing import List
 # Default configuration values
 CHUNK_SIZE: int = 500
 CHUNK_OVERLAP: int = 50
+CHUNK_SIZE_LINES: int = 30   # for line-based fallback chunking
+CHUNK_OVERLAP_LINES: int = 5  # line overlap for non-Python files
 EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
 DEFAULT_TOP_K: int = 5
 SERVER_NAME: str = "codebase-rag"

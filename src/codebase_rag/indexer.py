@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Dict, Any, Optional
@@ -24,26 +26,16 @@ def _iter_source_files(root: Path) -> Iterable[Path]:
     root = root.resolve()
     for path in root.rglob("*"):
         if path.is_dir():
-            if config.should_ignore_path(path):
-                # Skip whole ignored directory trees
-                dir_path = str(path)
-                for sub in list(path.rglob("*")):
-                    # Effectively skip; rglob will still walk, but we'll filter
-                    pass
-                continue
             continue
-
         if not config.is_supported_file(path):
             continue
-
         if config.should_ignore_path(path):
             continue
-
         yield path
 
 
 def _chunk_text(text: str, chunk_size: int, overlap: int) -> List[Dict[str, Any]]:
-    """Split text into overlapping character chunks."""
+    """Split text into overlapping character chunks (kept for backward compat)."""
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
     if overlap < 0:
@@ -64,12 +56,123 @@ def _chunk_text(text: str, chunk_size: int, overlap: int) -> List[Dict[str, Any]
     return chunks
 
 
+def _extract_imports(content: str) -> List[str]:
+    """Extract all imported module names from Python source."""
+    imports: List[str] = []
+    try:
+        tree = ast.parse(content)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imports.append(node.module)
+    except SyntaxError:
+        pass
+    return list(set(imports))
+
+
+def _chunk_by_ast(file_path: Path, content: str) -> List[Dict[str, Any]]:
+    """Chunk Python source by function/class definitions using AST.
+
+    Falls back to line-based chunking on parse errors or when no
+    top-level definitions exist.
+    """
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return _chunk_by_lines(file_path, content)
+
+    imports = _extract_imports(content)
+    lines = content.splitlines()
+    file_hash = hashlib.sha256(content.encode()).hexdigest()
+
+    chunks: List[Dict[str, Any]] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+
+        start_line = node.lineno - 1  # 0-indexed
+        end_line = getattr(node, "end_lineno", start_line + 20)
+        chunk_content = "\n".join(lines[start_line:end_line])
+
+        calls = [
+            n.func.id
+            for n in ast.walk(node)
+            if isinstance(n, ast.Call) and hasattr(n.func, "id")
+        ]
+
+        chunk_type = "class" if isinstance(node, ast.ClassDef) else "function"
+
+        chunks.append(
+            {
+                "content": chunk_content,
+                "type": chunk_type,
+                "name": node.name,
+                "line_start": node.lineno,
+                "line_end": end_line,
+                "path": str(file_path),
+                "imports": imports,
+                "calls": list(set(calls)),
+                "docstring": ast.get_docstring(node) or "",
+                "file_hash": file_hash,
+            }
+        )
+
+    if not chunks:
+        return _chunk_by_lines(file_path, content)
+
+    return chunks
+
+
+def _chunk_by_lines(
+    file_path: Path,
+    content: str,
+    size: int = config.CHUNK_SIZE_LINES,
+    overlap: int = config.CHUNK_OVERLAP_LINES,
+) -> List[Dict[str, Any]]:
+    """Chunk any source file by line count with overlap (fallback for non-Python)."""
+    lines = content.splitlines()
+    file_hash = hashlib.sha256(content.encode()).hexdigest()
+    chunks: List[Dict[str, Any]] = []
+    step = max(1, size - overlap)
+
+    for i in range(0, len(lines), step):
+        end = min(i + size, len(lines))
+        chunk_content = "\n".join(lines[i:end])
+        chunks.append(
+            {
+                "content": chunk_content,
+                "type": "block",
+                "name": "",
+                "line_start": i + 1,
+                "line_end": end,
+                "path": str(file_path),
+                "imports": [],
+                "calls": [],
+                "docstring": "",
+                "file_hash": file_hash,
+            }
+        )
+        if end == len(lines):
+            break
+
+    return chunks
+
+
+def chunk_file(file_path: Path, content: str) -> List[Dict[str, Any]]:
+    """Dispatch to the best chunking strategy for the given file."""
+    if file_path.suffix == ".py":
+        return _chunk_by_ast(file_path, content)
+    return _chunk_by_lines(file_path, content)
+
+
 def _get_client(db_path: Optional[Path] = None) -> chromadb.PersistentClient:
     """Create or reuse a Chroma persistent client."""
     if db_path is None:
         db_path = config.get_chroma_db_path()
-    else:
-        db_path.mkdir(parents=True, exist_ok=True)
+    db_path = Path(db_path)
+    db_path.mkdir(parents=True, exist_ok=True)
     return chromadb.PersistentClient(path=str(db_path))
 
 
@@ -89,15 +192,22 @@ def index_codebase(
 ) -> int:
     """Index all supported files under `root` into ChromaDB.
 
-    Returns number of chunks indexed.
+    Performs incremental indexing: files whose content hash matches the
+    existing index entry are skipped, avoiding redundant re-embedding.
+
+    Returns the number of new/updated chunks written.
     """
     root = root.resolve()
     provider = embedding_provider or EmbeddingProvider()
     client = _get_client(db_path)
     collection = _get_collection(client, collection_name)
 
-    chunk_size = config.CHUNK_SIZE
-    overlap = config.CHUNK_OVERLAP
+    # Build a map of the latest known file_hash per path for incremental check.
+    existing = collection.get(include=["metadatas"])
+    existing_hashes: Dict[str, str] = {}
+    for meta in (existing.get("metadatas") or []):
+        if meta and meta.get("path") and meta.get("file_hash"):
+            existing_hashes[meta["path"]] = meta["file_hash"]
 
     documents: List[str] = []
     metadatas: List[Dict[str, Any]] = []
@@ -105,32 +215,50 @@ def index_codebase(
 
     for file_path in _iter_source_files(root):
         try:
-            text = file_path.read_text(encoding="utf-8", errors="ignore")
+            content = file_path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
 
-        chunks = _chunk_text(text, chunk_size, overlap)
-        for idx, chunk in enumerate(chunks):
-            documents.append(chunk["text"])
+        file_hash = hashlib.sha256(content.encode()).hexdigest()
+        path_str = str(file_path)
+
+        # Skip files whose content hasn't changed since last index.
+        if existing_hashes.get(path_str) == file_hash:
+            continue
+
+        # Remove stale chunks so we don't accumulate duplicates.
+        try:
+            collection.delete(where={"path": path_str})
+        except Exception:
+            pass
+
+        for idx, chunk in enumerate(chunk_file(file_path, content)):
+            documents.append(chunk["content"])
             metadatas.append(
                 {
-                    "path": str(file_path),
-                    "start": chunk["start"],
-                    "end": chunk["end"],
+                    "path": path_str,
+                    "line_start": chunk["line_start"],
+                    "line_end": chunk["line_end"],
+                    "type": chunk.get("type", "block"),
+                    "name": chunk.get("name", ""),
+                    "docstring": chunk.get("docstring", ""),
+                    "file_hash": chunk["file_hash"],
+                    # ChromaDB metadata values must be scalars; join lists
+                    "imports": ",".join(chunk.get("imports", [])),
+                    "calls": ",".join(chunk.get("calls", [])),
                 }
             )
-            ids.append(f"{file_path}:{idx}")
+            ids.append(f"{path_str}:{chunk['line_start']}:{idx}")
 
     if not documents:
         return 0
 
-    # Compute embeddings in batches to avoid large single calls
+    # Compute embeddings in batches to keep memory usage reasonable.
     embeddings: List[List[float]] = []
     batch_size = 64
     for i in range(0, len(documents), batch_size):
         batch_docs = documents[i : i + batch_size]
         batch_embeddings = provider.encode(batch_docs)
-        # Ensure 2D numpy array, then convert to list
         if not isinstance(batch_embeddings, np.ndarray):
             batch_embeddings = np.array(batch_embeddings)
         if batch_embeddings.ndim == 1:
@@ -166,8 +294,7 @@ def list_indexed_files(
         path = meta.get("path")
         if not path:
             continue
-        existing = files.get(path)
-        if existing is None:
+        if path not in files:
             files[path] = {"path": path}
 
     return list(files.values())
@@ -187,7 +314,6 @@ def search_codebase(
     collection = _get_collection(client, collection_name)
 
     query_embedding = provider.encode([query])
-    # Ensure numpy array
     if not isinstance(query_embedding, np.ndarray):
         query_embedding = np.array(query_embedding)
     if query_embedding.ndim == 1:
@@ -206,12 +332,17 @@ def search_codebase(
     matches: List[Dict[str, Any]] = []
     for doc, meta, dist in zip(documents, metadatas, distances):
         path = (meta or {}).get("path", "")
-        score = float(1.0 - float(dist))  # convert distance to similarity-ish score
+        score = float(1.0 - float(dist))
         matches.append(
             {
                 "path": path,
                 "score": score,
                 "content": doc,
+                "line_start": (meta or {}).get("line_start"),
+                "line_end": (meta or {}).get("line_end"),
+                "type": (meta or {}).get("type", "block"),
+                "name": (meta or {}).get("name", ""),
+                "docstring": (meta or {}).get("docstring", ""),
             }
         )
 
