@@ -8,7 +8,7 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-# Run the MCP server
 if __name__ == "__main__":
-    from src.codebase_rag.server import mcp
-    mcp.run()
+    from codebase_rag.server import main
+    main()
+

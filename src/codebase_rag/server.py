@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from . import config
 from .indexer import (
@@ -14,8 +16,32 @@ from .indexer import (
     _get_client,
 )
 
+_host = os.environ.get("MCP_HOST", "127.0.0.1")
+_port = int(os.environ.get("MCP_PORT", "8000"))
+_allowed_host = os.environ.get("MCP_ALLOWED_HOST", "")
 
-mcp = FastMCP(config.SERVER_NAME, json_response=True)
+# Allow external hostname (e.g. Tailscale Funnel) when specified
+_transport_security: TransportSecuritySettings | None = None
+if _allowed_host and _host in ("127.0.0.1", "localhost", "::1"):
+    _transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[
+            f"{_host}:*", "localhost:*", "[::1]:*",
+            _allowed_host, f"{_allowed_host}:*",
+        ],
+        allowed_origins=[
+            f"http://{_host}:*", "http://localhost:*",
+            f"https://{_allowed_host}", f"https://{_allowed_host}:*",
+        ],
+    )
+
+mcp = FastMCP(
+    config.SERVER_NAME,
+    json_response=True,
+    host=_host,
+    port=_port,
+    transport_security=_transport_security,
+)
 
 
 @mcp.tool()
@@ -202,4 +228,10 @@ def get_file_content(path: str) -> str:
         File content as string
     """
     return _get_file_content(path)
+
+
+def main() -> None:
+    """Entry point for the codebase-rag MCP server."""
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    mcp.run(transport=transport)  # type: ignore[arg-type]
 
