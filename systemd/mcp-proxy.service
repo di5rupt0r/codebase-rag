@@ -1,0 +1,17 @@
+[Unit]
+Description=MCP Proxy — expõe codebase-rag via HTTP/SSE para clients remotos
+After=network.target codebase-rag-server.service
+Requires=codebase-rag-server.service
+
+[Service]
+Type=simple
+User=gabrielsb
+EnvironmentFile=/home/gabrielsb/.config/mcp-proxy/.env
+ExecStart=/home/gabrielsb/.local/bin/mcp-proxy --config /home/gabrielsb/.config/mcp-proxy/config.json
+Restart=always
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
