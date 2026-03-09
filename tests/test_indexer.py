@@ -18,6 +18,8 @@ from codebase_rag.indexer import (
     list_indexed_files,
     search_codebase,
     get_file_content,
+    _extract_keywords,
+    _rerank,
 )
 
 
@@ -393,7 +395,8 @@ class TestSearchCodebase:
         
         mock_collection_instance.query.assert_called_once()
         call_args = mock_collection_instance.query.call_args
-        assert call_args[1]["n_results"] == 10
+        # hybrid search fetches top_k*2 candidates for reranking
+        assert call_args[1]["n_results"] == 20
 
     @patch("codebase_rag.indexer.EmbeddingProvider")
     @patch("codebase_rag.indexer._get_client")
@@ -670,3 +673,95 @@ class TestSearchCodebaseEnrichedMetadata:
         assert results[0]["type"] == "function"
         assert results[0]["name"] == "foo"
         assert results[0]["docstring"] == "Does foo."
+
+
+class TestExtractKeywords:
+    """Test keyword extraction for hybrid search."""
+
+    def test_basic_words(self):
+        keywords = _extract_keywords("search for score function")
+        assert "search" in keywords
+        assert "score" in keywords
+        assert "function" in keywords
+
+    def test_stopwords_removed(self):
+        keywords = _extract_keywords("where is the function for parsing")
+        assert "the" not in keywords
+        assert "is" not in keywords
+        assert "for" not in keywords
+        assert "where" not in keywords
+        assert "parsing" in keywords
+
+    def test_short_words_excluded(self):
+        keywords = _extract_keywords("do it at my place")
+        # words with 2 or fewer chars are excluded
+        assert "do" not in keywords
+        assert "it" not in keywords
+        assert "at" not in keywords
+        assert "my" not in keywords
+
+    def test_empty_query(self):
+        keywords = _extract_keywords("")
+        assert keywords == []
+
+    def test_underscore_identifiers(self):
+        keywords = _extract_keywords("_extract_keywords function")
+        assert any("extract" in kw or "_extract_keywords" in kw for kw in keywords)
+
+    def test_numbers_excluded(self):
+        # numbers alone should not appear (regex requires letter or underscore start)
+        keywords = _extract_keywords("version 42 update")
+        assert "42" not in keywords
+
+    def test_case_insensitive(self):
+        keywords = _extract_keywords("PARSE Parse parse")
+        assert keywords.count("parse") == 1
+
+
+class TestRerank:
+    """Test reranking of search results with keyword heuristics."""
+
+    def _make_match(self, name: str, score: float, docstring: str = "") -> dict:
+        return {
+            "path": "test.py",
+            "score": score,
+            "content": f"def {name}(): pass",
+            "name": name,
+            "docstring": docstring,
+            "line_start": 1,
+            "line_end": 5,
+            "type": "function",
+        }
+
+    def test_no_keywords_preserves_order(self):
+        matches = [
+            self._make_match("foo", 0.9),
+            self._make_match("bar", 0.7),
+        ]
+        result = _rerank(matches, keywords=[])
+        assert [m["name"] for m in result] == ["foo", "bar"]
+
+    def test_name_match_boosts_score(self):
+        # "bar" match should be boosted over "foo" for keyword "bar"
+        matches = [
+            self._make_match("foo", 0.9),
+            self._make_match("bar", 0.7),
+        ]
+        result = _rerank(matches, keywords=["bar"])
+        assert result[0]["name"] == "bar"
+
+    def test_docstring_match_boosts_score(self):
+        matches = [
+            self._make_match("foo", 0.9, docstring=""),
+            self._make_match("bar", 0.8, docstring="parses input"),
+        ]
+        result = _rerank(matches, keywords=["parses"])
+        assert result[0]["name"] == "bar"
+
+    def test_returns_all_matches(self):
+        matches = [self._make_match(f"f{i}", 0.9 - i * 0.1) for i in range(5)]
+        result = _rerank(matches, keywords=["test"])
+        assert len(result) == 5
+
+    def test_empty_matches(self):
+        assert _rerank([], keywords=["test"]) == []

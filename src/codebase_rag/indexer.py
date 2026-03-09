@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Dict, Any, Optional
@@ -321,7 +322,7 @@ def search_codebase(
 
     result = collection.query(
         query_embeddings=query_embedding.astype("float32").tolist(),
-        n_results=top_k,
+        n_results=top_k * 2,  # fetch extra candidates for reranking
         include=["documents", "metadatas", "distances"],
     )
 
@@ -346,11 +347,66 @@ def search_codebase(
             }
         )
 
-    return matches
+    keywords = _extract_keywords(query)
+    matches = _rerank(matches, keywords)
+    return matches[:top_k]
 
 
 def get_file_content(path: str) -> str:
     """Read and return the full content of a file from disk."""
     file_path = Path(path)
     return file_path.read_text(encoding="utf-8", errors="ignore")
+
+
+_STOPWORDS: frozenset = frozenset([
+    "the", "a", "an", "in", "is", "it", "of", "to", "and", "or", "for",
+    "where", "how", "what", "which", "with", "that", "this", "from", "on",
+    "at", "by", "are", "was", "were", "be", "been", "being", "have", "has",
+    "had", "do", "does", "did", "will", "would", "could", "should", "may",
+    "might", "can", "not", "no", "so", "if", "my", "we", "they", "he",
+    "she", "you", "use", "used", "its", "get", "all", "new", "into",
+])
+
+
+def _extract_keywords(query: str) -> List[str]:
+    """Extract significant keywords from a query string."""
+    words = re.findall(r"\b[a-zA-Z_][a-zA-Z0-9_]*\b", query.lower())
+    seen: dict = {}
+    result: List[str] = []
+    for w in words:
+        if w not in _STOPWORDS and len(w) > 2 and w not in seen:
+            seen[w] = True
+            result.append(w)
+    return result
+
+
+def _rerank(
+    matches: List[Dict[str, Any]], keywords: List[str]
+) -> List[Dict[str, Any]]:
+    """Boost and re-sort results using keyword heuristics."""
+    if not keywords or not matches:
+        return matches
+
+    scored: List[tuple] = []
+    for match in matches:
+        score = match["score"]
+        name = (match.get("name") or "").lower()
+        docstring = (match.get("docstring") or "").lower()
+
+        # +30% per keyword found in symbol name (per spec rerank heuristics)
+        name_hits = sum(1 for kw in keywords if kw in name)
+        score *= 1 + 0.3 * name_hits
+
+        # +10% per keyword in docstring
+        doc_hits = sum(1 for kw in keywords if kw in docstring)
+        score *= 1 + 0.1 * doc_hits
+
+        # small boost when docstring exists at all (documented = reliable)
+        if match.get("docstring"):
+            score *= 1.05
+
+        scored.append((score, match))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [m for _, m in scored]
 
