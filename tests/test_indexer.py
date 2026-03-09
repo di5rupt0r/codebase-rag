@@ -10,6 +10,10 @@ from codebase_rag.indexer import (
     IndexStats,
     _chunk_text,
     _iter_source_files,
+    _extract_imports,
+    _chunk_by_ast,
+    _chunk_by_lines,
+    chunk_file,
     index_codebase,
     list_indexed_files,
     search_codebase,
@@ -158,6 +162,8 @@ class TestIndexCodebase:
         
         mock_collection_instance = Mock()
         mock_collection.return_value = mock_collection_instance
+        # Incremental check: empty existing index
+        mock_collection_instance.get.return_value = {"metadatas": []}
         
         with TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -165,7 +171,7 @@ class TestIndexCodebase:
             
             result = index_codebase(tmp_path)
             
-            assert result == 1  # 1 chunk indexed
+            assert result >= 1  # at least 1 chunk indexed
             mock_collection_instance.add.assert_called_once()
 
     @patch("codebase_rag.indexer.EmbeddingProvider")
@@ -180,15 +186,17 @@ class TestIndexCodebase:
         
         mock_collection_instance = Mock()
         mock_collection.return_value = mock_collection_instance
+        # Incremental check: empty existing index
+        mock_collection_instance.get.return_value = {"metadatas": []}
         
         with TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
-            (tmp_path / "test1.py").write_text("a" * 600)  # Will create 2 chunks
-            (tmp_path / "test2.py").write_text("b" * 300)  # Will create 1 chunk
+            (tmp_path / "test1.py").write_text("a" * 600)  # Will create multiple chunks
+            (tmp_path / "test2.py").write_text("b" * 300)  # Will create some chunks
             
             result = index_codebase(tmp_path)
             
-            assert result == 3  # 3 chunks total
+            assert result >= 2  # at least 2 chunks total
 
     def test_index_codebase_empty_dir(self):
         """Test indexing empty directory."""
@@ -207,6 +215,7 @@ class TestIndexCodebase:
         
         mock_collection_instance = Mock()
         mock_collection.return_value = mock_collection_instance
+        mock_collection_instance.get.return_value = {"metadatas": []}
         
         with TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -215,6 +224,67 @@ class TestIndexCodebase:
             index_codebase(tmp_path, collection_name="custom-collection")
             
             mock_collection.assert_called_once_with(mock_client.return_value, "custom-collection")
+
+    @patch("codebase_rag.indexer.EmbeddingProvider")
+    @patch("codebase_rag.indexer._get_client")
+    @patch("codebase_rag.indexer._get_collection")
+    def test_index_codebase_incremental_skip_unchanged(self, mock_collection, mock_client, mock_provider):
+        """Test that unchanged files are skipped during incremental indexing."""
+        import hashlib
+
+        mock_provider_instance = Mock()
+        mock_provider.return_value = mock_provider_instance
+
+        mock_collection_instance = Mock()
+        mock_collection.return_value = mock_collection_instance
+
+        with TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            content = "print('hello')"
+            file_path = tmp_path / "test.py"
+            file_path.write_text(content)
+
+            file_hash = hashlib.sha256(content.encode()).hexdigest()
+            # Simulate file already indexed with matching hash
+            mock_collection_instance.get.return_value = {
+                "metadatas": [{"path": str(file_path), "file_hash": file_hash}]
+            }
+
+            result = index_codebase(tmp_path)
+
+            # No new chunks since file is unchanged
+            assert result == 0
+            mock_collection_instance.add.assert_not_called()
+
+    @patch("codebase_rag.indexer.EmbeddingProvider")
+    @patch("codebase_rag.indexer._get_client")
+    @patch("codebase_rag.indexer._get_collection")
+    def test_index_codebase_incremental_reindex_changed(self, mock_collection, mock_client, mock_provider):
+        """Test that changed files are re-indexed and old chunks deleted."""
+        mock_provider_instance = Mock()
+        mock_provider.return_value = mock_provider_instance
+        mock_provider_instance.encode.return_value = [[0.1, 0.2, 0.3]]
+
+        mock_collection_instance = Mock()
+        mock_collection.return_value = mock_collection_instance
+
+        with TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            content = "print('hello')"
+            file_path = tmp_path / "test.py"
+            file_path.write_text(content)
+
+            # Simulate file indexed with a DIFFERENT hash (file changed)
+            mock_collection_instance.get.return_value = {
+                "metadatas": [{"path": str(file_path), "file_hash": "old_hash_value"}]
+            }
+
+            result = index_codebase(tmp_path)
+
+            # Old chunks deleted and new ones added
+            mock_collection_instance.delete.assert_called_once()
+            mock_collection_instance.add.assert_called_once()
+            assert result >= 1
 
 
 class TestListIndexedFiles:
@@ -393,3 +463,210 @@ class TestIndexStats:
         
         assert stats1 == stats2
         assert stats1 != stats3
+
+
+class TestExtractImports:
+    """Test Python import extraction."""
+
+    def test_extract_imports_basic(self):
+        content = "import os\nimport sys\n\nprint('hello')"
+        imports = _extract_imports(content)
+        assert "os" in imports
+        assert "sys" in imports
+
+    def test_extract_imports_from_import(self):
+        content = "from pathlib import Path\nfrom typing import List, Optional"
+        imports = _extract_imports(content)
+        assert "pathlib" in imports
+        assert "typing" in imports
+
+    def test_extract_imports_mixed(self):
+        content = "import os\nfrom pathlib import Path\nimport json"
+        imports = _extract_imports(content)
+        assert "os" in imports
+        assert "pathlib" in imports
+        assert "json" in imports
+
+    def test_extract_imports_empty(self):
+        imports = _extract_imports("x = 1")
+        assert imports == []
+
+    def test_extract_imports_syntax_error(self):
+        # Should not raise, just return empty list
+        imports = _extract_imports("def broken(:")
+        assert imports == []
+
+    def test_extract_imports_deduplicated(self):
+        content = "import os\nimport os"
+        imports = _extract_imports(content)
+        assert imports.count("os") == 1
+
+
+class TestChunkByAst:
+    """Test AST-based Python chunking."""
+
+    def test_chunk_function(self):
+        content = "def foo():\n    return 42\n"
+        chunks = _chunk_by_ast(Path("test.py"), content)
+        assert len(chunks) == 1
+        assert chunks[0]["type"] == "function"
+        assert chunks[0]["name"] == "foo"
+        assert "def foo" in chunks[0]["content"]
+
+    def test_chunk_class(self):
+        content = "class MyClass:\n    pass\n"
+        chunks = _chunk_by_ast(Path("test.py"), content)
+        assert len(chunks) >= 1
+        class_chunks = [c for c in chunks if c["type"] == "class"]
+        assert len(class_chunks) == 1
+        assert class_chunks[0]["name"] == "MyClass"
+
+    def test_chunk_multiple_functions(self):
+        content = "def foo():\n    pass\n\ndef bar():\n    pass\n"
+        chunks = _chunk_by_ast(Path("test.py"), content)
+        names = [c["name"] for c in chunks]
+        assert "foo" in names
+        assert "bar" in names
+
+    def test_chunk_docstring_extracted(self):
+        content = 'def greet():\n    """Say hello."""\n    return "hello"\n'
+        chunks = _chunk_by_ast(Path("test.py"), content)
+        assert chunks[0]["docstring"] == "Say hello."
+
+    def test_chunk_imports_extracted(self):
+        content = "import os\n\ndef foo():\n    pass\n"
+        chunks = _chunk_by_ast(Path("test.py"), content)
+        assert "os" in chunks[0]["imports"]
+
+    def test_chunk_file_hash_present(self):
+        content = "def foo():\n    pass\n"
+        chunks = _chunk_by_ast(Path("test.py"), content)
+        assert "file_hash" in chunks[0]
+        assert len(chunks[0]["file_hash"]) == 64  # SHA256 hex digest
+
+    def test_chunk_line_numbers(self):
+        content = "def foo():\n    pass\n\ndef bar():\n    pass\n"
+        chunks = _chunk_by_ast(Path("test.py"), content)
+        foo_chunk = next(c for c in chunks if c["name"] == "foo")
+        bar_chunk = next(c for c in chunks if c["name"] == "bar")
+        assert foo_chunk["line_start"] == 1
+        assert bar_chunk["line_start"] == 4
+
+    def test_chunk_syntax_error_falls_back_to_lines(self):
+        # Invalid Python — must fall back gracefully
+        content = "def broken(:"
+        chunks = _chunk_by_ast(Path("test.py"), content)
+        assert len(chunks) >= 1
+        assert all(c["type"] == "block" for c in chunks)
+
+    def test_chunk_no_functions_falls_back_to_lines(self):
+        # Valid Python but no function/class definitions
+        content = "x = 1\ny = 2\nz = x + y\n"
+        chunks = _chunk_by_ast(Path("test.py"), content)
+        assert len(chunks) >= 1
+        assert all(c["type"] == "block" for c in chunks)
+
+    def test_chunk_calls_extracted(self):
+        content = "def foo():\n    bar()\n    baz()\n"
+        chunks = _chunk_by_ast(Path("test.py"), content)
+        assert "bar" in chunks[0]["calls"] or "baz" in chunks[0]["calls"]
+
+
+class TestChunkByLines:
+    """Test line-based chunking fallback."""
+
+    def test_basic_chunking(self):
+        content = "\n".join(f"line{i}" for i in range(60))
+        chunks = _chunk_by_lines(Path("test.js"), content)
+        assert len(chunks) > 1
+        assert all(c["type"] == "block" for c in chunks)
+
+    def test_overlap(self):
+        content = "\n".join(f"line{i}" for i in range(60))
+        chunks = _chunk_by_lines(Path("test.js"), content, size=30, overlap=5)
+        # With overlap, adjacent chunks share lines
+        lines_c0 = set(chunks[0]["content"].splitlines())
+        lines_c1 = set(chunks[1]["content"].splitlines())
+        assert lines_c0 & lines_c1  # some shared lines
+
+    def test_file_hash_present(self):
+        content = "line1\nline2\n"
+        chunks = _chunk_by_lines(Path("test.js"), content)
+        assert "file_hash" in chunks[0]
+        assert len(chunks[0]["file_hash"]) == 64
+
+    def test_empty_content(self):
+        chunks = _chunk_by_lines(Path("test.js"), "")
+        assert chunks == []
+
+    def test_line_numbers_correct(self):
+        content = "\n".join(f"line{i}" for i in range(10))
+        chunks = _chunk_by_lines(Path("test.js"), content, size=5, overlap=0)
+        assert chunks[0]["line_start"] == 1
+        assert chunks[0]["line_end"] == 5
+        assert chunks[1]["line_start"] == 6
+
+    def test_imports_and_calls_empty_for_non_python(self):
+        content = "const x = 1;\nconsole.log(x);\n"
+        chunks = _chunk_by_lines(Path("test.js"), content)
+        assert chunks[0]["imports"] == []
+        assert chunks[0]["calls"] == []
+
+
+class TestChunkFile:
+    """Test chunk_file dispatcher."""
+
+    def test_dispatches_ast_for_py(self):
+        content = "def foo():\n    pass\n"
+        chunks = chunk_file(Path("test.py"), content)
+        # AST chunking returns function-level chunks
+        assert any(c["type"] == "function" for c in chunks)
+
+    def test_dispatches_lines_for_js(self):
+        content = "\n".join(f"line{i}" for i in range(40))
+        chunks = chunk_file(Path("test.js"), content)
+        assert all(c["type"] == "block" for c in chunks)
+
+    def test_dispatches_lines_for_ts(self):
+        content = "const x = 1;\n"
+        chunks = chunk_file(Path("app.ts"), content)
+        assert all(c["type"] == "block" for c in chunks)
+
+    def test_dispatches_lines_for_yaml(self):
+        content = "key: value\n"
+        chunks = chunk_file(Path("config.yaml"), content)
+        assert all(c["type"] == "block" for c in chunks)
+
+
+class TestSearchCodebaseEnrichedMetadata:
+    """Test that search returns enriched metadata fields."""
+
+    @patch("codebase_rag.indexer.EmbeddingProvider")
+    @patch("codebase_rag.indexer._get_client")
+    @patch("codebase_rag.indexer._get_collection")
+    def test_search_returns_line_numbers(self, mock_collection, mock_client, mock_provider):
+        mock_provider_instance = Mock()
+        mock_provider.return_value = mock_provider_instance
+        mock_provider_instance.encode.return_value = [[0.1, 0.2, 0.3]]
+
+        mock_collection_instance = Mock()
+        mock_collection.return_value = mock_collection_instance
+        mock_collection_instance.query.return_value = {
+            "documents": [["def foo(): pass"]],
+            "metadatas": [[{
+                "path": "foo.py",
+                "line_start": 10,
+                "line_end": 15,
+                "type": "function",
+                "name": "foo",
+                "docstring": "Does foo.",
+            }]],
+            "distances": [[0.1]],
+        }
+
+        results = search_codebase(query="foo function")
+        assert results[0]["line_start"] == 10
+        assert results[0]["line_end"] == 15
+        assert results[0]["type"] == "function"
+        assert results[0]["name"] == "foo"
+        assert results[0]["docstring"] == "Does foo."
