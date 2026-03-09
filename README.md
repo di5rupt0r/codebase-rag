@@ -112,12 +112,43 @@ gh copilot config set mcp.servers.codebase-rag.command \
 ```
 
 #### Cline (VS Code)
+
+**Opção 1: Usando uvx (recomendado)**
+```json
+{
+  "mcpServers": {
+    "codebase-rag": {
+      "command": "uvx",
+      "args": [
+        "--with",
+        "mcp",
+        "--with", 
+        "chromadb",
+        "--with",
+        "sentence-transformers",
+        "--with",
+        "numpy",
+        "--with",
+        "pydantic",
+        "--with",
+        "python-dotenv",
+        "--with-editable",
+        "/home/gabrielsb/mcp-servers/codebase-rag",
+        "python",
+        "/home/gabrielsb/mcp-servers/codebase-rag/src/codebase_rag/server.py"
+      ]
+    }
+  }
+}
+```
+
+**Opção 2: Usando wrapper script (mais simples)**
 ```json
 {
   "mcpServers": {
     "codebase-rag": {
       "command": "python",
-      "args": ["/home/gabriel/mcp-servers/codebase-rag/src/codebase_rag/server.py"]
+      "args": ["/home/gabrielsb/mcp-servers/codebase-rag/run_server.py"]
     }
   }
 }
