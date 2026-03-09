@@ -14,7 +14,7 @@ HOOK_TEMPLATE = """\
 # Auto-reindex changed code files after each commit (installed by setup_git_hook.py)
 changed_files=$(git diff-tree --no-commit-id --name-only -r HEAD)
 if echo "$changed_files" | grep -qE '\\.(py|js|ts|jsx|tsx|java|cpp|c|h|go|rs|rb|php|cs)$'; then
-    python {reindex_script} --project {project_name} --files "$changed_files" &
+    {python} {reindex_script} --project {project_name} --files "$changed_files" &
 fi
 """
 
@@ -33,6 +33,7 @@ def install_hook(repo_path: str, project_name: str) -> None:
     hook_path = hooks_dir / "post-commit"
 
     hook_content = HOOK_TEMPLATE.format(
+        python=sys.executable,
         reindex_script=REINDEX_SCRIPT,
         project_name=project_name,
     )
