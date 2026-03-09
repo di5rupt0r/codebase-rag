@@ -1,12 +1,13 @@
 [Unit]
-Description=MCP Proxy — expõe codebase-rag via HTTP/SSE para clients remotos
+Description=MCP Proxy — exposes codebase-rag via HTTP/SSE to remote clients
 After=network.target codebase-rag-server.service
 Requires=codebase-rag-server.service
 
 [Service]
 Type=simple
-User=gabrielsb
-ExecStart=/home/gabrielsb/.local/bin/mcp-proxy --port 8080 -- /home/gabrielsb/.local/bin/uv run --directory /home/gabrielsb/mcp-servers/codebase-rag python main.py
+# Replace with your username
+User=YOUR_USERNAME
+ExecStart=/home/YOUR_USERNAME/.local/bin/mcp-proxy --port 8080 -- /home/YOUR_USERNAME/.local/bin/uv run --directory /home/YOUR_USERNAME/mcp-servers/codebase-rag python main.py
 Restart=always
 RestartSec=5s
 StandardOutput=journal

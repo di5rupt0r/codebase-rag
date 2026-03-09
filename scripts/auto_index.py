@@ -74,13 +74,13 @@ def main() -> None:
         epilog="""
 Examples:
   # Scan two directories
-  python auto_index.py --scan ~/projetos ~/mcp-servers
+  python auto_index.py --scan ~/projects ~/mcp-servers
 
   # Dry run: show what would be indexed without doing it
-  python auto_index.py --scan ~/projetos --dry-run
+  python auto_index.py --scan ~/projects --dry-run
 
   # Force reindex even if already indexed
-  python auto_index.py --scan ~/projetos --force
+  python auto_index.py --scan ~/projects --force
         """,
     )
     parser.add_argument(

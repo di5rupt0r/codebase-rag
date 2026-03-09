@@ -1,71 +1,66 @@
 # MCP Codebase RAG Server
 
-> Servidor MCP customizado que expõe busca semântica vetorial de codebase para qualquer client MCP (Copilot CLI, Cline, Claude Desktop, Perplexity, etc.).
-> **Objetivo**: Adicionar RAG robusto ao Copilot Pro sem depender de ferramentas pagas.
-> **Zero custo, zero limites, controle total.**
+> Self-hosted MCP server that adds semantic vector search over your local codebases to any MCP-capable client (GitHub Copilot, Cline, Claude Desktop, etc.).  
+> **Goal**: Robust RAG for Copilot (or any MCP client) without paying for Cursor/Windsurf.  
+> **Zero cost. Zero limits. Full control.**
 
 ---
 
-## 📋 Visão Geral
+## 📋 Overview
 
-### Problema Resolvido
-- GitHub Copilot Pro tem modelo excelente (Sonnet 4.6) mas RAG limitado
-- Cursor/Windsurf têm RAG bom mas custam $15-20/mês  
-- Continue.dev tem RAG mas não integra nativamente com agents MCP-aware
+### Problem Solved
+- GitHub Copilot Pro has an excellent model but limited codebase RAG
+- Cursor/Windsurf have good RAG but cost $15–20/month
+- Continue.dev has RAG but doesn't integrate natively with MCP-aware agents
 
-### Solução
-Este servidor MCP oferece:
-1. **Indexação** de codebase local usando embeddings vetoriais
-2. **Busca semântica** via tool `search_codebase` 
-3. **Multi-projeto** com coleções separadas no ChromaDB
-4. **Integração total** com qualquer client MCP
+### Solution
+This MCP server provides:
+1. **Indexing** of local codebases using vector embeddings
+2. **Semantic search** via the `search_codebase` tool — with keyword reranking (hybrid search)
+3. **Multi-project** support with isolated ChromaDB collections
+4. **Universal integration** with any MCP client
 
-### Stack Tecnológica
+### Tech Stack
 
-| Componente | Tecnologia | Motivo |
+| Component | Technology | Why |
 |---|---|---|
-| Embeddings | **sentence-transformers** (all-MiniLM-L6-v2) | Rápido, leve, 384-dim |
-| Vector DB | **ChromaDB** | Simples, persistente, zero config |
-| Code parsing | Python AST + chunking por caractere | Funciona em qualquer linguagem |
-| MCP SDK | **@modelcontextprotocol/sdk** | Padrão oficial |
-| Runtime | Python 3.11+ | Ecosystem maduro |
+| Embeddings | **sentence-transformers** (`all-MiniLM-L6-v2`) | Fast, lightweight, 384-dim |
+| Code embeddings | **microsoft/unixcoder-base** (optional) | Code-specific model, activated via `EMBEDDING_MODEL` |
+| Vector DB | **ChromaDB** | Simple, persistent, zero config |
+| Code parsing | Python AST + character chunking | Works across all supported languages |
+| MCP SDK | **modelcontextprotocol/python-sdk** | Official standard |
+| Runtime | Python 3.11+ | — |
 
 ---
 
-## 🚀 Instalação e Setup
+## 🚀 Installation
 
-### Pré-requisitos
+### Prerequisites
 - Python 3.11+
-- uv (recomendado) ou pip
-- Acesso ao codebase que deseja indexar
+- `pip` or `uv`
 
-### Instalação
+### Install
 
 ```bash
-# Clone o projeto
-git clone <repository-url>
-cd mcp-servers/codebase-rag
+git clone https://github.com/di5rupt0r/codebase-rag.git
+cd codebase-rag
 
-# Instale dependências com uv
-uv install
-
-# Ou com pip
+# Install as a package (adds the `codebase-rag` command to ~/.local/bin)
 pip install -e .
 ```
 
 ### Health Check
 
 ```bash
-# Verifique se tudo está funcionando
 python scripts/health_check.py
 ```
 
-Saída esperada:
+Expected output:
 ```
 🔍 MCP Codebase RAG Server Health Check
 ==================================================
 Checking Embedding Provider... ✓ OK (3.03s)
-Checking ChromaDB Connection... ✓ OK (0.14s)  
+Checking ChromaDB Connection... ✓ OK (0.14s)
 Checking Search Functionality... ✓ OK (2.36s)
 Checking Data Directory... ✓ OK (0.00s)
 ==================================================
@@ -75,83 +70,70 @@ Health Check Summary: 4/4 checks passed
 
 ---
 
-## 📖 Uso Rápido
+## 📖 Quick Start
 
-### 1. Indexar um Projeto
-
-```bash
-# Indexe o projeto atual
-python scripts/index_project.py . --name meu-projeto
-
-# Indexe path específico
-python scripts/index_project.py ~/projetos/api --name api-backend
-
-# Force reindex (apaga índice existente)
-python scripts/index_project.py . --name meu-projeto --force
-
-# Dry run para ver o que será indexado
-python scripts/index_project.py . --name meu-projeto --dry-run
-```
-
-### 2. Iniciar Servidor MCP
+### 1. Index a Project
 
 ```bash
-# Inicie o servidor
-python src/codebase_rag/server.py
+# Index the current directory
+python scripts/index_project.py . --name my-project
 
-# Ou via main.py
-python main.py
+# Index a specific path
+python scripts/index_project.py ~/projects/api --name api-backend
+
+# Force full reindex
+python scripts/index_project.py . --name my-project --force
+
+# Dry run to preview what will be indexed
+python scripts/index_project.py . --name my-project --dry-run
 ```
 
-### 3. Configurar Client MCP
+### 2. Start the MCP Server
 
-#### Copilot CLI
+#### stdio (default — for local clients)
 ```bash
-gh copilot config set mcp.servers.codebase-rag.command \
-  "python /home/gabriel/mcp-servers/codebase-rag/src/codebase_rag/server.py"
+codebase-rag
 ```
 
-#### Cline (VS Code)
+#### HTTP (for remote clients or always-on service)
+```bash
+MCP_TRANSPORT=streamable-http MCP_PORT=8080 codebase-rag
+```
 
-**Configuração Testada e Funcional:**
+### 3. Configure Your MCP Client
+
+#### VS Code (GitHub Copilot / Cline) — stdio mode
+
+Add to your VS Code `mcp.json`:
 ```json
 {
-  "mcpServers": {
+  "servers": {
     "codebase-rag": {
-      "command": "uvx",
-      "args": [
-        "--with", "mcp",
-        "--with", "chromadb",
-        "--with", "sentence-transformers",
-        "--with", "numpy",
-        "--with", "pydantic",
-        "--with", "python-dotenv",
-        "--with-editable", "/home/gabrielsb/mcp-servers/codebase-rag",
-        "python", "entrypoint.py"
-      ]
+      "type": "stdio",
+      "command": "codebase-rag"
+    }
+  }
+}
+```
+
+#### VS Code — HTTP mode (when running as a service)
+```json
+{
+  "servers": {
+    "codebase-rag": {
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp"
     }
   }
 }
 ```
 
 #### Claude Desktop
-
-**Configuração Testada e Funcional:**
 ```json
 {
   "mcpServers": {
     "codebase-rag": {
-      "command": "uvx",
-      "args": [
-        "--with", "mcp",
-        "--with", "chromadb",
-        "--with", "sentence-transformers",
-        "--with", "numpy",
-        "--with", "pydantic",
-        "--with", "python-dotenv",
-        "--with-editable", "/home/gabrielsb/mcp-servers/codebase-rag",
-        "python", "entrypoint.py"
-      ]
+      "command": "codebase-rag"
     }
   }
 }
@@ -159,17 +141,17 @@ gh copilot config set mcp.servers.codebase-rag.command \
 
 ---
 
-## 🛠️ MCP Tools Disponíveis
+## 🛠️ MCP Tools
 
 ### `search_codebase`
-Busca semântica no codebase usando embeddings vetoriais.
+Semantic search over an indexed project using vector embeddings + keyword reranking.
 
 **Input**:
 ```json
 {
-  "query": "onde está a lógica de autenticação?",
+  "query": "where is the authentication logic?",
   "top_k": 5,
-  "project": "meu-projeto",
+  "project": "my-project",
   "file_types": [".py", ".js"]
 }
 ```
@@ -190,280 +172,205 @@ Busca semântica no codebase usando embeddings vetoriais.
 ```
 
 ### `reindex_project`
-Re-indexa um projeto após mudanças grandes.
+Re-index a project after large changes.
 
 **Input**:
 ```json
 {
-  "project_path": "/home/gabriel/projetos/api",
-  "project_name": "api-backend",
+  "project_path": "/path/to/your/project",
+  "project_name": "my-project",
   "force": false
 }
 ```
 
-**Output**:
-```json
-{
-  "status": "success",
-  "files_indexed": 23,
-  "chunks_created": 1247,
-  "time_seconds": 8.3
-}
-```
-
 ### `list_indexed_projects`
-Lista todos os projetos indexados.
-
-**Output**:
-```json
-{
-  "projects": [
-    {
-      "name": "meu-projeto",
-      "path": "/home/gabriel/meu-projeto",
-      "files": 23,
-      "chunks": 1247
-    }
-  ]
-}
-```
+List all indexed projects.
 
 ### `get_files`
-Lista arquivos indexados em um projeto.
+List indexed files in a project.
 
-**Input**:
-```json
-{
-  "project": "meu-projeto"
-}
-```
+**Input**: `{ "project": "my-project" }`
 
 ### `get_file_content`
-Retorna conteúdo completo de um arquivo.
+Return the full content of an indexed file.
 
-**Input**:
-```json
-{
-  "path": "src/main.py"
-}
-```
+**Input**: `{ "path": "src/main.py" }`
 
 ---
 
-## ⚙️ Configuração
+## ⚙️ Configuration
 
-### Variáveis de Ambiente
+### Environment Variables
 
 ```bash
-# Path do ChromaDB (default: ./data/chroma_db)
+# ChromaDB path (default: ./data/chroma_db relative to install dir)
 export CHROMA_DB_PATH="/custom/path/to/chroma"
 
-# Modelo de embeddings (default: all-MiniLM-L6-v2)
-export EMBEDDING_MODEL="multi-qa-mpnet-base-dot-v1"
+# Embedding model (default: all-MiniLM-L6-v2)
+# Use microsoft/unixcoder-base for better code-specific embeddings (~2GB, requires torch)
+export EMBEDDING_MODEL="microsoft/unixcoder-base"
 
-# Nível de log (default: INFO)
+# HTTP transport settings (only needed in HTTP/service mode)
+export MCP_TRANSPORT="streamable-http"
+export MCP_HOST="127.0.0.1"
+export MCP_PORT="8080"
+# Set this when exposing via reverse proxy or Tailscale Funnel
+export MCP_ALLOWED_HOST="your-hostname.example.com"
+
+# Log level (default: INFO)
 export LOG_LEVEL="DEBUG"
 ```
 
-### Configuração de Chunking
+### Chunking (Advanced)
 
-No arquivo `src/codebase_rag/config.py`:
+Edit `src/codebase_rag/config.py`:
 
 ```python
-CHUNK_SIZE = 500          # caracteres por chunk
-CHUNK_OVERLAP = 50        # overlap entre chunks
-DEFAULT_TOP_K = 5         # resultados por busca
+CHUNK_SIZE = 500          # characters per chunk
+CHUNK_OVERLAP = 50        # overlap between chunks
+DEFAULT_TOP_K = 5         # default results per search
 ```
 
-### Arquivos Suportados
+### Supported File Types
 
-- **Python**: `.py`
-- **JavaScript/TypeScript**: `.js`, `.ts`, `.jsx`, `.tsx`
-- **Java**: `.java`
-- **C/C++**: `.c`, `.cpp`, `.h`
-- **Go**: `.go`
-- **Rust**: `.rs`
-- **Outros**: `.rb`, `.php`, `.cs`, `.sh`, `.yaml`, `.yml`, `.json`
+Python, JavaScript, TypeScript, JSX, TSX, Java, C, C++, Go, Rust, Ruby, PHP, C#, Shell, YAML, JSON.
 
-### Padrões Ignorados
+### Ignored Patterns
 
-- `*.pyc`, `__pycache__`, `.git`
-- `node_modules`, `.venv`, `venv`
-- `*.egg-info`, `.pytest_cache`
+`*.pyc`, `__pycache__`, `.git`, `node_modules`, `.venv`, `venv`, `*.egg-info`, `.pytest_cache`
 
 ---
 
 ## 📊 Benchmarks
 
-| Operação | Tempo Esperado | Notas |
+| Operation | Expected Time | Notes |
 |---|---|---|
-| Indexar 20 arquivos .py (~5k LOC) | ~5-8s | Primeira vez; incremental é mais rápido |
-| Busca vetorial (top_k=5) | ~20-50ms | ChromaDB é muito rápido |
-| Embedding de query | ~10-20ms | sentence-transformers local |
-| Cold start do server | ~2-3s | Carrega modelo na memória |
+| Index 20 .py files (~5k LOC) | ~5–8s | First run; incremental is much faster |
+| Vector search (top_k=5) | ~20–50ms | ChromaDB in-process |
+| Query embedding | ~10–20ms | sentence-transformers, CPU |
+| Server cold start | ~2–3s | Model loaded into memory |
 
 ---
 
-## 🧪 Testes
+## 🤖 Automation Scripts
 
-### Rodar Testes
-
+### Auto-discovery
+Scan a directory for Git repositories and index them all automatically:
 ```bash
-# Todos os testes
-uvx --with pytest --with numpy --with sentence-transformers --with-editable . pytest -v
-
-# Testes específicos
-pytest tests/test_config.py -v
-pytest tests/test_embeddings.py -v  
-pytest tests/test_indexer.py -v
-pytest tests/test_server.py -v
+python scripts/auto_index.py ~/projects
 ```
 
-### Cobertura
+### Watch Mode
+Watch a project for file changes and reindex incrementally (debounced, 5s):
+```bash
+python scripts/watch.py /path/to/project --name my-project
+```
+
+### Git Hook (post-commit reindex)
+Install a post-commit hook so changed files are reindexed automatically after every commit:
+```bash
+python scripts/setup_git_hook.py /path/to/your/repo my-project
+```
+
+---
+
+## 🧪 Tests
 
 ```bash
+# All tests (116 passing)
+pytest -v
+
+# Specific modules
+pytest tests/test_config.py -v
+pytest tests/test_embeddings.py -v
+pytest tests/test_indexer.py -v
+pytest tests/test_server.py -v
+
+# With coverage
 pytest --cov=codebase_rag --cov-report=html
 ```
 
 ---
 
-## 🔧 Deploy (systemd)
+## 🔧 Deploy as a systemd Service (Linux)
 
-### Criar Service File
-
-`/etc/systemd/system/codebase-rag.service`:
-```ini
-[Unit]
-Description=MCP Codebase RAG Server
-After=network.target
-
-[Service]
-Type=simple
-User=gabriel
-WorkingDirectory=/home/gabriel/mcp-servers/codebase-rag
-Environment="PATH=/home/gabriel/.local/bin:/usr/bin"
-ExecStart=/home/gabriel/.local/bin/uv run python src/codebase_rag/server.py
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### Comandos Deploy
+A template service file is provided at `systemd/codebase-rag-server.service`.  
+Replace `YOUR_USERNAME` with your actual Linux username before installing:
 
 ```bash
-# Instalar service
-sudo cp systemd/codebase-rag.service /etc/systemd/system/
+# Substitute your username in-place
+sed -i "s/YOUR_USERNAME/$USER/g" systemd/codebase-rag-server.service
+
+# Install and start
+sudo cp systemd/codebase-rag-server.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable codebase-rag
-sudo systemctl start codebase-rag
+sudo systemctl enable codebase-rag-server
+sudo systemctl start codebase-rag-server
 
-# Verificar status
-sudo systemctl status codebase-rag
-sudo journalctl -u codebase-rag -f
+# Check
+sudo systemctl status codebase-rag-server
+sudo journalctl -u codebase-rag-server -f
 ```
 
----
+### Exposing Remotely via Tailscale Funnel (optional)
 
-## 🎯 Exemplos de Uso
-
-### Busca por Função Específica
+To use the server from a remote machine (Codespaces, company laptop, etc.):
 
 ```bash
-# Via Copilot CLI
-gh copilot suggest "use search_codebase para encontrar onde está a função score_job"
+# Expose port 8080 via Tailscale Funnel
+tailscale funnel 8080
 
-# Resultado esperado: trechos de código com a função, ordenados por relevância
+# Add to your service file:
+# Environment="MCP_ALLOWED_HOST=your-machine.your-tailnet.ts.net"
+
+# Then in your remote mcp.json:
+# "url": "https://your-machine.your-tailnet.ts.net/mcp"
 ```
-
-### Análise de Arquitetura
-
-```bash
-gh copilot suggest "use search_codebase com query 'padrão de injeção de dependência' top_k=10"
-```
-
-### Debugging
-
-```bash
-gh copilot suggest "use search_codebase para encontrar onde ocorre o erro 'database connection failed'"
-```
-
----
-
-## 🔄 Roadmap Futuro
-
-- [ ] **Indexação incremental** - só reindexa arquivos modificados
-- [ ] **Auto-discovery** - detecta projetos Git automaticamente  
-- [ ] **Watch mode** - reindexa automaticamente após mudanças
-- [ ] **UI web** - interface para visualizar índice e testar buscas
-- [ ] **Múltiplos modelos** - suporte a diferentes embedding models
-- [ ] **Cache de queries** - acelera buscas frequentes
-- [ ] **Integração LSP** - indexação awareness de linguagem
 
 ---
 
 ## 🐛 Troubleshooting
 
-### Problemas Comuns
+**Slow first start**: The embedding model (~100MB) is downloaded on first use. Run `health_check.py` to pre-load it.
 
-**Model loading lento**: Primeira execução baixa o modelo (~100MB). Execute `health_check.py` para pré-carregar.
+**High memory usage**: The default model uses ~500MB RAM. If needed, use an even smaller model via `EMBEDDING_MODEL`.
 
-**Memory usage**: Modelo usa ~500MB RAM. Se necessário, use modelo menor.
+**Permission errors**: Ensure the running user has write access to `data/chroma_db/`.
 
-**Permissões**: Verifique se o usuário tem acesso de escrita ao `data/chroma_db`.
-
-**Embeddings falhando**: Verifique conexão com internet para primeiro download do modelo.
-
-### Debug Mode
-
+**Debug mode**:
 ```bash
-# Ative logs detalhados
-LOG_LEVEL=DEBUG python src/codebase_rag/server.py
-
-# Verifique configuração
-python -c "from codebase_rag import config; print(config.CHROMA_DB_PATH)"
+LOG_LEVEL=DEBUG codebase-rag
 ```
 
 ---
 
-## 📝 Contribuindo
+## 📝 Contributing
 
-1. Fork o projeto
-2. Crie feature branch: `git checkout -b feature/nova-funcionalidade`
-3. Siga TDD rigoroso: RED → GREEN → REFACTOR
-4. Commits atômicos descritivos
-5. Pull request com testes
-
-### Desenvolvimento
+1. Fork the project
+2. Create a feature branch: `git checkout -b feature/your-feature`
+3. Follow strict TDD: RED → GREEN → REFACTOR
+4. Atomic, descriptive commits
+5. Open a pull request with tests
 
 ```bash
-# Ambiente dev
-uv install --dev
-
-# Formatação
-black src/ tests/
-ruff check src/ tests/
-
-# Testes completos
+# Dev setup
+pip install -e ".[dev]"
 pytest -v --cov=codebase_rag
 ```
 
 ---
 
-## 📄 Licença
+## 📄 License
 
-MIT License - ver arquivo LICENSE.
+MIT License — see [LICENSE](LICENSE).
 
 ---
 
-## 🔗 Referências
+## 🔗 References
 
 - [MCP Protocol](https://modelcontextprotocol.io)
-- [ChromaDB Docs](https://docs.trychroma.com)  
+- [ChromaDB Docs](https://docs.trychroma.com)
 - [sentence-transformers](https://www.sbert.net)
 - [FastMCP](https://github.com/jlowin/fastmcp)
 
 ---
-
-**Feito com ❤️ para dar poder ao Copilot com RAG local e ilimitado.**
