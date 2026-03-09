@@ -1,6 +1,7 @@
 [project]
 name = "codebase-rag"
 version = "0.1.0"
+requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.0.0",
     "chromadb>=0.4.0",
@@ -9,7 +10,18 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "numpy>=2.4.3",
     "watchdog>=4.0.0",
+    "uvicorn>=0.20.0",
 ]
+
+[project.scripts]
+codebase-rag = "codebase_rag.server:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [dependency-groups]
 dev = [
