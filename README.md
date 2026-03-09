@@ -113,54 +113,71 @@ gh copilot config set mcp.servers.codebase-rag.command \
 
 #### Cline (VS Code)
 
-**Opção 1: Usando uvx (recomendado)**
+**Solução Definitiva (recomendada):**
+```json
+{
+  "mcpServers": {
+    "codebase-rag": {
+      "command": "python",
+      "args": ["/home/gabrielsb/mcp-servers/codebase-rag/mcp_server.py"]
+    }
+  }
+}
+```
+
+Este script `mcp_server.py` já inclui todas as dependências via uvx automaticamente.
+
+**Alternativa: uvx direto**
 ```json
 {
   "mcpServers": {
     "codebase-rag": {
       "command": "uvx",
       "args": [
-        "--with",
-        "mcp",
-        "--with", 
-        "chromadb",
-        "--with",
-        "sentence-transformers",
-        "--with",
-        "numpy",
-        "--with",
-        "pydantic",
-        "--with",
-        "python-dotenv",
-        "--with-editable",
-        "/home/gabrielsb/mcp-servers/codebase-rag",
-        "python",
-        "/home/gabrielsb/mcp-servers/codebase-rag/src/codebase_rag/server.py"
+        "--with", "mcp",
+        "--with", "chromadb", 
+        "--with", "sentence-transformers",
+        "--with", "numpy",
+        "--with", "pydantic",
+        "--with", "python-dotenv",
+        "--with-editable", "/home/gabrielsb/mcp-servers/codebase-rag",
+        "python", "/home/gabrielsb/mcp-servers/codebase-rag/src/codebase_rag/server.py"
       ]
     }
   }
 }
 ```
 
-**Opção 2: Usando wrapper script (mais simples)**
+#### Claude Desktop
+
+**Solução Definitiva (recomendada):**
 ```json
 {
   "mcpServers": {
     "codebase-rag": {
       "command": "python",
-      "args": ["/home/gabrielsb/mcp-servers/codebase-rag/run_server.py"]
+      "args": ["/home/gabrielsb/mcp-servers/codebase-rag/mcp_server.py"]
     }
   }
 }
 ```
 
-#### Claude Desktop
+**Alternativa: uvx direto**
 ```json
 {
   "mcpServers": {
     "codebase-rag": {
-      "command": "python",
-      "args": ["/home/gabriel/mcp-servers/codebase-rag/src/codebase_rag/server.py"]
+      "command": "uvx",
+      "args": [
+        "--with", "mcp",
+        "--with", "chromadb", 
+        "--with", "sentence-transformers",
+        "--with", "numpy",
+        "--with", "pydantic",
+        "--with", "python-dotenv",
+        "--with-editable", "/home/gabrielsb/mcp-servers/codebase-rag",
+        "python", "/home/gabrielsb/mcp-servers/codebase-rag/src/codebase_rag/server.py"
+      ]
     }
   }
 }
