@@ -5,8 +5,8 @@ from typing import List, Dict, Any, Optional
 
 from mcp.server.fastmcp import FastMCP
 
-from codebase_rag import config
-from codebase_rag.indexer import (
+from . import config
+from .indexer import (
     search_codebase as _search_codebase,
     list_indexed_files as _list_indexed_files,
     get_file_content as _get_file_content,
