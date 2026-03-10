@@ -206,17 +206,18 @@ class TestGetFiles:
 
     @patch("codebase_rag.server._list_indexed_files")
     def test_get_files_basic(self, mock_list_files):
-        """Test basic file listing."""
+        """get_files requires explicit project; results come from the right collection."""
         mock_list_files.return_value = [
             {"path": "file1.py"},
             {"path": "file2.js"},
         ]
-        
-        result = get_files()
-        
+
+        result = get_files(project="my-project")
+
         assert len(result) == 2
         assert result[0]["path"] == "file1.py"
         assert result[1]["path"] == "file2.js"
+        mock_list_files.assert_called_once_with(collection_name="my-project")
 
     @patch("codebase_rag.server._list_indexed_files")
     def test_get_files_with_project(self, mock_list_files):
@@ -229,11 +230,11 @@ class TestGetFiles:
 
     @patch("codebase_rag.server._list_indexed_files")
     def test_get_files_error_handling(self, mock_list_files):
-        """Test error handling in file listing."""
+        """When _list_indexed_files raises, the exception propagates."""
         mock_list_files.side_effect = Exception("List failed")
-        
+
         with pytest.raises(Exception, match="List failed"):
-            get_files()
+            get_files(project="my-project")
 
 
 class TestGetFileContent:
@@ -264,6 +265,101 @@ class TestGetFileContent:
             # Should not raise, but return empty or partial content
             content = get_file_content(str(file_path))
             assert isinstance(content, str)
+
+
+class TestGetFilesRequiresProject:
+    """Bug 1 — get_files must require an explicit project; old default 'codebase-rag' is wrong."""
+
+    def test_get_files_without_project_returns_error(self):
+        """Calling get_files() with no project must return an error dict, not silently
+        fall back to the server's own 'codebase-rag' collection."""
+        result = get_files()
+        assert isinstance(result, dict)
+        assert "error" in result
+
+    @patch("codebase_rag.server._list_indexed_files")
+    def test_get_files_with_project_uses_that_collection(self, mock_list_files):
+        """get_files(project='x') must query collection 'x', not 'codebase-rag'."""
+        mock_list_files.return_value = [{"path": "a.py"}]
+        result = get_files(project="x")
+        mock_list_files.assert_called_once_with(collection_name="x")
+        assert isinstance(result, list)
+
+
+class TestListIndexedProjectsShowsPath:
+    """Bug 3 — list_indexed_projects must return the real path from the registry."""
+
+    @patch("codebase_rag.server._get_client")
+    @patch("codebase_rag.server.registry.get_project_path")
+    def test_path_comes_from_registry(self, mock_get_path, mock_get_client):
+        """list_indexed_projects must call registry.get_project_path and return the result."""
+        mock_get_path.return_value = "/real/project/path"
+
+        mock_client = Mock()
+        mock_get_client.return_value = mock_client
+        mock_col = Mock()
+        mock_col.name = "my-project"
+        mock_client.list_collections.return_value = [mock_col]
+        mock_col_obj = Mock()
+        mock_client.get_collection.return_value = mock_col_obj
+        mock_col_obj.get.return_value = {"metadatas": [{"path": "/real/project/path/main.py"}]}
+
+        result = list_indexed_projects()
+
+        assert result["projects"][0]["path"] == "/real/project/path"
+        mock_get_path.assert_called_once_with("my-project")
+
+    @patch("codebase_rag.server._get_client")
+    @patch("codebase_rag.server.registry.get_project_path")
+    def test_path_is_na_when_not_in_registry(self, mock_get_path, mock_get_client):
+        """When a collection is not in the registry, path falls back to 'N/A'."""
+        mock_get_path.return_value = None
+
+        mock_client = Mock()
+        mock_get_client.return_value = mock_client
+        mock_col = Mock()
+        mock_col.name = "old-project"
+        mock_client.list_collections.return_value = [mock_col]
+        mock_col_obj = Mock()
+        mock_client.get_collection.return_value = mock_col_obj
+        mock_col_obj.get.return_value = {"metadatas": [{"path": "/some/file.py"}]}
+
+        result = list_indexed_projects()
+
+        assert result["projects"][0]["path"] == "N/A"
+
+
+class TestReindexWritesRegistry:
+    """reindex_project must persist the project_path to the registry."""
+
+    @patch("codebase_rag.server.registry.update_registry")
+    @patch("codebase_rag.server._index_codebase")
+    @patch("codebase_rag.server._list_indexed_files")
+    def test_reindex_calls_update_registry(self, mock_list, mock_index, mock_update_reg):
+        mock_index.return_value = 5
+        mock_list.return_value = [{"path": "f.py"}]
+
+        with TemporaryDirectory() as tmp_dir:
+            reindex_project(tmp_dir, "my-project")
+
+        mock_update_reg.assert_called_once_with("my-project", str(Path(tmp_dir).resolve()))
+
+
+class TestGetFileContentWithProject:
+    """Bug 2 — get_file_content tool must accept optional project param for validation."""
+
+    @patch("codebase_rag.server._get_file_content")
+    def test_get_file_content_passes_project_to_indexer(self, mock_get_content):
+        """The server tool must forward the project param to the indexer."""
+        mock_get_content.return_value = "code"
+        get_file_content("/some/file.py", project="my-project")
+        mock_get_content.assert_called_once_with("/some/file.py", project="my-project")
+
+    @patch("codebase_rag.server._get_file_content")
+    def test_get_file_content_without_project_still_works(self, mock_get_content):
+        mock_get_content.return_value = "code"
+        get_file_content("/some/file.py")
+        mock_get_content.assert_called_once_with("/some/file.py", project=None)
 
 
 class TestServerIntegration:

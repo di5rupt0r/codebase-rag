@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import config
+from . import config, registry
 from .indexer import (
     search_codebase as _search_codebase,
     list_indexed_files as _list_indexed_files,
@@ -139,6 +139,9 @@ def reindex_project(
         # Perform indexing
         chunks_created = _index_codebase(project_path_obj, collection_name=collection_name)
         
+        # Persist path mapping so list_indexed_projects can return the real path.
+        registry.update_registry(collection_name, str(project_path_obj))
+
         # Count files after indexing
         files_after = len(list(_list_indexed_files(collection_name=collection_name)))
         
@@ -184,7 +187,7 @@ def list_indexed_projects() -> Dict[str, Any]:
             projects.append(
                 {
                     "name": col.name,
-                    "path": "N/A",
+                    "path": registry.get_project_path(col.name) or "N/A",
                     "files": len(files),
                     "chunks": len(metadatas),
                     "last_indexed": "Unknown",
@@ -204,30 +207,39 @@ def list_indexed_projects() -> Dict[str, Any]:
 
 
 @mcp.tool()
-def get_files(project: Optional[str] = None) -> List[Dict[str, Any]]:
-    """List all files that have been indexed in the codebase.
+def get_files(project: Optional[str] = None) -> Any:
+    """List all files that have been indexed for a project.
     
     Args:
-        project: Project name to list files for (optional)
+        project: Project name to list files for (required). Use
+                 list_indexed_projects() to discover available project names.
     
     Returns:
-        List of file metadata dictionaries
+        List of file metadata dicts, or an error dict when project is omitted.
     """
-    collection_name = project if project else "codebase-rag"
-    return _list_indexed_files(collection_name=collection_name)
+    if project is None:
+        return {
+            "error": (
+                "'project' parameter is required. "
+                "Call list_indexed_projects() to see available project names."
+            )
+        }
+    return _list_indexed_files(collection_name=project)
 
 
 @mcp.tool()
-def get_file_content(path: str) -> str:
+def get_file_content(path: str, project: Optional[str] = None) -> str:
     """Return the full content of a given file path.
     
     Args:
         path: File path to read
+        project: When supplied, validates that the path belongs to this project
+                 before reading. Raises an error if the path is not indexed.
         
     Returns:
         File content as string
     """
-    return _get_file_content(path)
+    return _get_file_content(path, project=project)
 
 
 def main() -> None:
