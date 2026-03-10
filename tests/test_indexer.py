@@ -765,3 +765,73 @@ class TestRerank:
 
     def test_empty_matches(self):
         assert _rerank([], keywords=["test"]) == []
+
+
+class TestIndexCodesbaseWritesRegistry:
+    """index_codebase must call registry.update_registry with the project path."""
+
+    @patch("codebase_rag.indexer.registry.update_registry")
+    def test_index_codebase_calls_update_registry(self, mock_update_registry):
+        """Indexing a project must persist the path in the registry."""
+        with TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "main.py").write_text("def hello(): pass")
+
+            index_codebase(root, collection_name="my-project")
+
+        mock_update_registry.assert_called_once_with("my-project", str(root))
+
+    @patch("codebase_rag.indexer.registry.update_registry")
+    def test_index_codebase_uses_resolved_path(self, mock_update_registry):
+        """The path written to the registry must be the resolved (absolute) path."""
+        with TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "main.py").write_text("x = 1")
+
+            index_codebase(root, collection_name="proj")
+
+        called_path = mock_update_registry.call_args[0][1]
+        assert Path(called_path).is_absolute()
+
+
+class TestGetFileContentValidation:
+    """get_file_content must accept an optional project parameter to validate
+    that the requested path actually belongs to the given collection."""
+
+    def test_get_file_content_without_project_reads_disk(self, tmp_path):
+        """When no project is given, behaviour stays as before (read from disk)."""
+        f = tmp_path / "hello.py"
+        f.write_text("print('hi')")
+        assert get_file_content(str(f)) == "print('hi')"
+
+    @patch("codebase_rag.indexer._get_client")
+    def test_get_file_content_with_valid_project_succeeds(self, mock_get_client, tmp_path):
+        """When project is supplied and path is in the collection, content is returned."""
+        f = tmp_path / "hello.py"
+        f.write_text("x = 42")
+
+        mock_client = Mock()
+        mock_get_client.return_value = mock_client
+        mock_collection = Mock()
+        mock_client.get_or_create_collection.return_value = mock_collection
+        # Simulate the path being found in the collection
+        mock_collection.get.return_value = {"metadatas": [{"path": str(f)}]}
+
+        result = get_file_content(str(f), project="my-project")
+        assert result == "x = 42"
+
+    @patch("codebase_rag.indexer._get_client")
+    def test_get_file_content_with_unknown_path_raises(self, mock_get_client, tmp_path):
+        """When project is supplied but path is NOT in the collection, raise ValueError."""
+        f = tmp_path / "hello.py"
+        f.write_text("secret")
+
+        mock_client = Mock()
+        mock_get_client.return_value = mock_client
+        mock_collection = Mock()
+        mock_client.get_or_create_collection.return_value = mock_collection
+        # Simulate path NOT found in the collection
+        mock_collection.get.return_value = {"metadatas": []}
+
+        with pytest.raises(ValueError, match="not found in project"):
+            get_file_content(str(f), project="my-project")

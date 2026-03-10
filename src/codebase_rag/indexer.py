@@ -11,7 +11,7 @@ import numpy as np
 import chromadb
 from chromadb.api.models import Collection
 
-from . import config
+from . import config, registry
 from .embeddings import EmbeddingProvider
 
 
@@ -273,6 +273,8 @@ def index_codebase(
         embeddings=embeddings,
     )
 
+    registry.update_registry(collection_name, str(root))
+
     return len(documents)
 
 
@@ -352,8 +354,18 @@ def search_codebase(
     return matches[:top_k]
 
 
-def get_file_content(path: str) -> str:
-    """Read and return the full content of a file from disk."""
+def get_file_content(path: str, project: Optional[str] = None) -> str:
+    """Read and return the full content of a file from disk.
+
+    When *project* is supplied the path is validated against that collection;
+    a ``ValueError`` is raised if the path is not found in the index.
+    """
+    if project is not None:
+        client = _get_client()
+        collection = _get_collection(client, project)
+        result = collection.get(where={"path": path}, include=["metadatas"])
+        if not (result.get("metadatas") or []):
+            raise ValueError(f"Path '{path}' not found in project '{project}'")
     file_path = Path(path)
     return file_path.read_text(encoding="utf-8", errors="ignore")
 
