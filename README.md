@@ -16,7 +16,7 @@
 ### Solution
 This MCP server provides:
 1. **Indexing** of local codebases using vector embeddings
-2. **Semantic search** via the `search_codebase` tool — with keyword reranking (hybrid search)
+2. **Hybrid semantic search** via `search_codebase` tool — combines dense (embeddings) + sparse (BM25) + RRF fusion
 3. **Multi-project** support with isolated ChromaDB collections
 4. **Universal integration** with any MCP client
 
@@ -27,7 +27,7 @@ This MCP server provides:
 | Embeddings | **sentence-transformers** (`all-MiniLM-L6-v2`) | Fast, lightweight, 384-dim |
 | Code embeddings | **microsoft/unixcoder-base** (optional) | Code-specific model, activated via `EMBEDDING_MODEL` |
 | Vector DB | **ChromaDB** | Simple, persistent, zero config |
-| Code parsing | Python AST + character chunking | Works across all supported languages |
+| Code parsing | **Tree-sitter** + BM25 + RRF | Universal language-agnostic chunking and hybrid search |
 | MCP SDK | **modelcontextprotocol/python-sdk** | Official standard |
 | Runtime | Python 3.11+ | — |
 
@@ -141,10 +141,68 @@ Add to your VS Code `mcp.json`:
 
 ---
 
-## 🛠️ MCP Tools
+## � Search Capabilities
+
+### Hybrid Search Architecture
+
+The server implements a **hybrid search** system that combines:
+
+1. **Dense Search** (Vector Embeddings)
+   - Semantic similarity using sentence-transformers
+   - Finds conceptually similar code
+   - Base: ChromaDB vector similarity
+
+2. **Sparse Search** (BM25)
+   - Exact lexical term matching
+   - Finds precise identifiers and keywords
+   - Base: rank-bm25 with regex tokenization
+
+3. **Reciprocal Rank Fusion** (RRF)
+   - Intelligent fusion of dense + sparse results
+   - k=60 (standard literature value)
+   - Improves both precision and recall
+
+### Search Results
+
+```json
+{
+  "results": [
+    {
+      "path": "src/auth.py",
+      "content": "def authenticate_user(user, password): ...",
+      "score": 0.0325,
+      "type": "function",
+      "name": "authenticate_user", 
+      "line_start": 15,
+      "line_end": 25
+    }
+  ],
+  "total_indexed_chunks": 1247,
+  "query_time_ms": 23.4,
+  "search_type": "hybrid_rrf"
+}
+```
+
+### Performance Characteristics
+
+| Metric | Target | Description |
+|---|---|---|
+| Tree-sitter parsing | < 50ms/file | Universal language parsing |
+| BM25 indexing | < 10ms/query | In-memory reconstruction |
+| RRF fusion | < 1ms | In-memory score calculation |
+| Total query time | < 100ms | End-to-end hybrid search |
+| Memory overhead | < 50MB | For 5k chunks |
+
+### Fallback Behavior
+
+- **Tree-sitter unavailable** → Line-based chunking
+- **BM25 unavailable** → Dense-only search  
+- **Both unavailable** → Original dense search with keyword reranking
+
+## �️ MCP Tools
 
 ### `search_codebase`
-Semantic search over an indexed project using vector embeddings + keyword reranking.
+Hybrid semantic search over an indexed project using vector embeddings + BM25 + RRF fusion.
 
 **Input**:
 ```json
