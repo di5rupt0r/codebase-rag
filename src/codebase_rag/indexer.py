@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib
+
 import re
 import time
 from dataclasses import dataclass
@@ -9,15 +9,17 @@ from typing import Iterable, List, Dict, Any, Optional
 
 import numpy as np
 import chromadb
-from chromadb.api.models import Collection
+
+from chromadb import Collection
 
 try:
     from tree_sitter import Language, Parser
-    from tree_sitter_languages import get_language
+    from tree_sitter_python import get_language, parser
 except ImportError:
     Language = None
     Parser = None
     get_language = None
+    parser = None
 
 try:
     from rank_bm25 import BM25Okapi
@@ -169,6 +171,7 @@ def reciprocal_rank_fusion(
                 "name": chunk_data.get("name", ""),
                 "line_start": chunk_data.get("line_start", 0),
                 "line_end": chunk_data.get("line_end", 0),
+                "chunk_index": chunk_idx,  # Add chunk_index for RRF
             }
             fused_results.append(result)
     
@@ -205,15 +208,19 @@ def _chunk_by_treesitter(content: str, file_extension: str) -> List[Dict[str, An
             return _fallback_chunk_by_lines(content)
         
         # Create parser
-        parser = Parser()
-        parser.set_language(language)
+        if parser is not None:
+            p = parser()
+            p.set_language(language)
+        else:
+            p = Parser()
+            p.set_language(language)
         
         # Parse content
-        tree = parser.parse(bytes(content, "utf-8"))
+        tree = p.parse(bytes(content, "utf-8"))
         
         chunks = []
         # Walk the tree and extract chunk nodes
-        def _extract_chunks(node, depth=0):
+        def _extract_chunks(node):
             if node.type in _CHUNK_NODE_TYPES:
                 # Extract node text
                 start_byte = node.start_byte
@@ -224,12 +231,26 @@ def _chunk_by_treesitter(content: str, file_extension: str) -> List[Dict[str, An
                 start_line = node.start_point[0] + 1
                 end_line = node.end_point[0] + 1
                 
-                # Extract node name if available
+                # Extract node name - look for identifier in children or siblings
                 node_name = ""
+                # Try to find name in first child
                 for child in node.children:
-                    if child.type == "identifier":
+                    if hasattr(child, 'type') and child.type == "identifier":
                         node_name = content[child.start_byte:child.end_byte]
                         break
+                
+                # If no identifier found, try to extract from text
+                if not node_name:
+                    lines = chunk_text.split('\n')
+                    if lines:
+                        first_line = lines[0].strip()
+                        # Extract name from function/class definition
+                        if 'def ' in first_line:
+                            node_name = first_line.split('def ')[1].split('(')[0].strip()
+                        elif 'class ' in first_line:
+                            node_name = first_line.split('class ')[1].split(':')[0].strip()
+                        elif 'function ' in first_line:
+                            node_name = first_line.split('function ')[1].split('(')[0].strip()
                 
                 chunk_type = "class" if "class" in node.type else "function"
                 
@@ -245,7 +266,7 @@ def _chunk_by_treesitter(content: str, file_extension: str) -> List[Dict[str, An
             
             # Recursively process children
             for child in node.children:
-                _extract_chunks(child, depth + 1)
+                _extract_chunks(child)
         
         _extract_chunks(tree.root_node)
         
