@@ -12,12 +12,12 @@ import chromadb
 from chromadb.api.models import Collection
 
 try:
-    from tree_sitter_python import _binding as binding
     from tree_sitter import Language, Parser
+    from tree_sitter_languages import get_language
 except ImportError:
     Language = None
     Parser = None
-    binding = None
+    get_language = None
 
 try:
     from rank_bm25 import BM25Okapi
@@ -192,7 +192,7 @@ def _iter_source_files(root: Path) -> Iterable[Path]:
 
 def _chunk_by_treesitter(content: str, file_extension: str) -> List[Dict[str, Any]]:
     """Chunk content using tree-sitter for universal language support."""
-    if Language is None or Parser is None or _binding is None:
+    if Language is None or Parser is None or get_language is None:
         return _fallback_chunk_by_lines(content)
     
     # Get language from file extension
@@ -202,15 +202,16 @@ def _chunk_by_treesitter(content: str, file_extension: str) -> List[Dict[str, An
     
     try:
         # Get tree-sitter language
-        lang_id = binding.language(lang_name)
-        if lang_id is None:
+        language = get_language(lang_name)
+        if language is None:
             return _fallback_chunk_by_lines(content)
         
-        # Create parser with language ID
-        p = Parser(lang_id)
+        # Create parser
+        parser = Parser()
+        parser.set_language(language)
         
         # Parse content
-        tree = p.parse(bytes(content, "utf-8"))
+        tree = parser.parse(bytes(content, "utf-8"))
         
         chunks = []
         # Walk the tree and extract chunk nodes

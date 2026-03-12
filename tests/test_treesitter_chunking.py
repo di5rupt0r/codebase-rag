@@ -8,12 +8,13 @@ from codebase_rag.indexer import _chunk_by_treesitter, _fallback_chunk_by_lines
 class TestTreeSitterChunking:
     """Test tree-sitter based chunking."""
 
-    @patch('codebase_rag.indexer.binding')
+    @patch('codebase_rag.indexer.get_language')
     @patch('codebase_rag.indexer.Parser')
-    def test_chunk_python_function(self, mock_parser, mock_binding):
+    def test_chunk_python_function(self, mock_parser, mock_get_language):
         """Test chunking Python function definitions."""
         # Mock the tree-sitter behavior
-        mock_binding.language.return_value = 12345  # Mock language ID
+        mock_language = Mock()
+        mock_get_language.return_value = mock_language
         mock_parser.return_value.parse.return_value = Mock()
         
         # Mock the tree structure
@@ -38,12 +39,13 @@ class TestTreeSitterChunking:
         func_chunks = [c for c in chunks if c["type"] == "function"]
         assert len(func_chunks) >= 1
 
-    @patch('codebase_rag.indexer.binding')
+    @patch('codebase_rag.indexer.get_language')
     @patch('codebase_rag.indexer.Parser')
-    def test_chunk_javascript_function(self, mock_parser, mock_binding):
+    def test_chunk_javascript_function(self, mock_parser, mock_get_language):
         """Test chunking JavaScript function definitions."""
         # Mock the tree-sitter behavior
-        mock_binding.language.return_value = 12345  # Mock language ID
+        mock_language = Mock()
+        mock_get_language.return_value = mock_language
         mock_parser.return_value.parse.return_value = Mock()
         
         # Mock the tree structure with function and class
@@ -87,10 +89,9 @@ class TestTreeSitterChunking:
         assert len(chunks) > 0
         assert all(c["type"] == "block" for c in chunks)
 
-    @patch('codebase_rag.indexer.Language')
-    @patch('codebase_rag.indexer.Parser')
     @patch('codebase_rag.indexer.get_language')
-    def test_chunk_without_tree_sitter(self, mock_lang, mock_parser, mock_get_lang):
+    @patch('codebase_rag.indexer.Parser')
+    def test_chunk_without_tree_sitter(self, mock_parser, mock_get_language):
         """Test fallback when tree-sitter is not available."""
         content = "def test(): pass"
         chunks = _chunk_by_treesitter(content, ".py")
