@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-
+import hashlib
 import re
 import time
 from dataclasses import dataclass
@@ -9,17 +9,15 @@ from typing import Iterable, List, Dict, Any, Optional
 
 import numpy as np
 import chromadb
-
-from chromadb import Collection
+from chromadb.api.models import Collection
 
 try:
+    from tree_sitter_python import _binding as binding
     from tree_sitter import Language, Parser
-    from tree_sitter_python import get_language, parser
 except ImportError:
     Language = None
     Parser = None
-    get_language = None
-    parser = None
+    binding = None
 
 try:
     from rank_bm25 import BM25Okapi
@@ -50,9 +48,10 @@ _CHUNK_NODE_TYPES = {
     "function_definition",
     "method_definition", 
     "class_definition",
-    "constructor_definition",
     "async_function_definition",
     "async_method_definition",
+    "decorated_definition",
+    "module",
 }
 
 
@@ -193,7 +192,7 @@ def _iter_source_files(root: Path) -> Iterable[Path]:
 
 def _chunk_by_treesitter(content: str, file_extension: str) -> List[Dict[str, Any]]:
     """Chunk content using tree-sitter for universal language support."""
-    if Language is None or Parser is None or get_language is None:
+    if Language is None or Parser is None or _binding is None:
         return _fallback_chunk_by_lines(content)
     
     # Get language from file extension
@@ -203,17 +202,12 @@ def _chunk_by_treesitter(content: str, file_extension: str) -> List[Dict[str, An
     
     try:
         # Get tree-sitter language
-        language = get_language(lang_name)
-        if language is None:
+        lang_id = binding.language(lang_name)
+        if lang_id is None:
             return _fallback_chunk_by_lines(content)
         
-        # Create parser
-        if parser is not None:
-            p = parser()
-            p.set_language(language)
-        else:
-            p = Parser()
-            p.set_language(language)
+        # Create parser with language ID
+        p = Parser(lang_id)
         
         # Parse content
         tree = p.parse(bytes(content, "utf-8"))
