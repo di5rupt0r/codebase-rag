@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import ast
 import hashlib
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Dict, Any, Optional
@@ -11,19 +11,172 @@ import numpy as np
 import chromadb
 from chromadb.api.models import Collection
 
-from . import config, registry
+try:
+    from tree_sitter import Language, Parser
+    from tree_sitter_languages import get_language
+except ImportError:
+    Language = None
+    Parser = None
+    get_language = None
+
+try:
+    from rank_bm25 import BM25Okapi
+except ImportError:
+    BM25Okapi = None
+
+from . import config
 from .embeddings import EmbeddingProvider
+
+
+# Tree-sitter configuration
+_EXTENSION_MAP = {
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript", 
+    ".jsx": "javascript",
+    ".tsx": "typescript",
+    ".java": "java",
+    ".go": "go",
+    ".rs": "rust",
+    ".c": "c",
+    ".cpp": "cpp",
+    ".h": "c",
+    ".hpp": "cpp",
+}
+
+_CHUNK_NODE_TYPES = {
+    "function_definition",
+    "method_definition", 
+    "class_definition",
+    "constructor_definition",
+    "async_function_definition",
+    "async_method_definition",
+}
 
 
 @dataclass
 class IndexStats:
     """Simple statistics about an indexing run."""
-
     documents_indexed: int
 
 
+@dataclass
+class BM25Index:
+    """BM25 index for sparse search."""
+    
+    def __init__(self) -> None:
+        if BM25Okapi is None:
+            raise ImportError("rank-bm25 not available")
+        self.bm25: Optional[BM25Okapi] = None
+        self.chunks: List[Dict[str, Any]] = []
+        self.tokenized_corpus: List[List[str]] = []
+    
+    def index(self, chunks: List[Dict[str, Any]]) -> None:
+        """Index chunks for BM25 search."""
+        self.chunks = chunks
+        # Extract text content from chunks
+        corpus = [chunk.get("text", "") for chunk in chunks]
+        # Tokenize corpus
+        self.tokenized_corpus = [self._tokenize(doc) for doc in corpus]
+        # Create BM25 index
+        self.bm25 = BM25Okapi(self.tokenized_corpus)
+    
+    def search(self, query: str, top_k: int = 10) -> List[tuple[int, float]]:
+        """Search using BM25."""
+        if self.bm25 is None:
+            return []
+        
+        # Tokenize query
+        tokenized_query = self._tokenize(query)
+        # Search
+        doc_scores = self.bm25.get_scores(tokenized_query)
+        # Get top-k results
+        top_indices = np.argsort(doc_scores)[-top_k:][::-1]
+        return [(int(idx), float(doc_scores[idx])) for idx in top_indices if doc_scores[idx] > 0]
+    
+    def _tokenize(self, text: str) -> List[str]:
+        """Simple tokenization using regex."""
+        # Extract alphanumeric tokens, minimum length 2
+        tokens = re.findall(r"[a-zA-Z0-9_]+", text.lower())
+        return [token for token in tokens if len(token) >= 2]
+
+
+def reciprocal_rank_fusion(
+    dense_results: List[Dict[str, Any]], 
+    sparse_results: List[tuple[int, float]], 
+    chunks: List[Dict[str, Any]], 
+    k: int = 60, 
+    top_k: int = 10
+) -> List[Dict[str, Any]]:
+    """Fuse dense and sparse search results using Reciprocal Rank Fusion."""
+    # Create mapping from chunk index to chunk data
+    chunk_map = {i: chunk for i, chunk in enumerate(chunks)}
+    
+    # Create score dictionaries
+    dense_scores = {}
+    sparse_scores = {}
+    
+    # Process dense results (from ChromaDB)
+    for i, result in enumerate(dense_results):
+        chunk_idx = result.get("chunk_index", i)
+        rank = i + 1  # 1-based ranking
+        rrf_score = 1.0 / (k + rank)
+        dense_scores[chunk_idx] = rrf_score
+    
+    # Process sparse results (from BM25)
+    for chunk_idx, score in sparse_results:
+        # Find rank of this chunk in sparse results
+        sparse_rank = 1
+        for i, (idx, _) in enumerate(sparse_results):
+            if idx == chunk_idx:
+                sparse_rank = i + 1
+                break
+        
+        rrf_score = 1.0 / (k + sparse_rank)
+        sparse_scores[chunk_idx] = rrf_score
+    
+    # Combine scores
+    combined_scores = {}
+    
+    # Add dense scores
+    for chunk_idx, score in dense_scores.items():
+        combined_scores[chunk_idx] = score
+    
+    # Add sparse scores
+    for chunk_idx, score in sparse_scores.items():
+        if chunk_idx in combined_scores:
+            combined_scores[chunk_idx] += score
+        else:
+            combined_scores[chunk_idx] = score
+    
+    # Sort by combined score (descending)
+    sorted_results = sorted(
+        combined_scores.items(), 
+        key=lambda x: x[1], 
+        reverse=True
+    )
+    
+    # Return top-k results with chunk data
+    fused_results = []
+    for chunk_idx, combined_score in sorted_results[:top_k]:
+        chunk_data = chunk_map.get(chunk_idx)
+        if chunk_data:
+            result = {
+                "path": chunk_data.get("path", ""),
+                "content": chunk_data.get("text", ""),
+                "score": combined_score,
+                "type": chunk_data.get("type", ""),
+                "name": chunk_data.get("name", ""),
+                "line_start": chunk_data.get("line_start", 0),
+                "line_end": chunk_data.get("line_end", 0),
+            }
+            fused_results.append(result)
+    
+    return fused_results
+
+
 def _iter_source_files(root: Path) -> Iterable[Path]:
-    """Yield all supported, non-ignored files under the given root."""
+    """Yield all supported, non-ignored files under given root."""
     root = root.resolve()
     for path in root.rglob("*"):
         if path.is_dir():
@@ -35,145 +188,107 @@ def _iter_source_files(root: Path) -> Iterable[Path]:
         yield path
 
 
-def _chunk_text(text: str, chunk_size: int, overlap: int) -> List[Dict[str, Any]]:
-    """Split text into overlapping character chunks (kept for backward compat)."""
-    if chunk_size <= 0:
-        raise ValueError("chunk_size must be positive")
-    if overlap < 0:
-        raise ValueError("overlap must be non-negative")
-
-    chunks: List[Dict[str, Any]] = []
-    start = 0
-    text_len = len(text)
-
-    while start < text_len:
-        end = min(start + chunk_size, text_len)
-        chunk = text[start:end]
-        chunks.append({"start": start, "end": end, "text": chunk})
-        if end == text_len:
-            break
-        start = end - overlap if overlap < (end - start) else end
-
-    return chunks
-
-
-def _extract_imports(content: str) -> List[str]:
-    """Extract all imported module names from Python source."""
-    imports: List[str] = []
+def _chunk_by_treesitter(content: str, file_extension: str) -> List[Dict[str, Any]]:
+    """Chunk content using tree-sitter for universal language support."""
+    if Language is None or Parser is None or get_language is None:
+        return _fallback_chunk_by_lines(content)
+    
+    # Get language from file extension
+    lang_name = _EXTENSION_MAP.get(file_extension.lower())
+    if not lang_name:
+        return _fallback_chunk_by_lines(content)
+    
     try:
-        tree = ast.parse(content)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imports.extend(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imports.append(node.module)
-    except SyntaxError:
-        pass
-    return list(set(imports))
+        # Get tree-sitter language
+        language = get_language(lang_name)
+        if language is None:
+            return _fallback_chunk_by_lines(content)
+        
+        # Create parser
+        parser = Parser()
+        parser.set_language(language)
+        
+        # Parse content
+        tree = parser.parse(bytes(content, "utf-8"))
+        
+        chunks = []
+        # Walk the tree and extract chunk nodes
+        def _extract_chunks(node, depth=0):
+            if node.type in _CHUNK_NODE_TYPES:
+                # Extract node text
+                start_byte = node.start_byte
+                end_byte = node.end_byte
+                chunk_text = content[start_byte:end_byte]
+                
+                # Get line numbers
+                start_line = node.start_point[0] + 1
+                end_line = node.end_point[0] + 1
+                
+                # Extract node name if available
+                node_name = ""
+                for child in node.children:
+                    if child.type == "identifier":
+                        node_name = content[child.start_byte:child.end_byte]
+                        break
+                
+                chunk_type = "class" if "class" in node.type else "function"
+                
+                chunks.append({
+                    "text": chunk_text,
+                    "type": chunk_type,
+                    "name": node_name,
+                    "line_start": start_line,
+                    "line_end": end_line,
+                    "start": start_byte,
+                    "end": end_byte,
+                })
+            
+            # Recursively process children
+            for child in node.children:
+                _extract_chunks(child, depth + 1)
+        
+        _extract_chunks(tree.root_node)
+        
+        # If no chunks found, fallback to line-based
+        if not chunks:
+            return _fallback_chunk_by_lines(content)
+        
+        return chunks
+        
+    except Exception:
+        # Any error, fallback to line-based chunking
+        return _fallback_chunk_by_lines(content)
 
 
-def _chunk_by_ast(file_path: Path, content: str) -> List[Dict[str, Any]]:
-    """Chunk Python source by function/class definitions using AST.
-
-    Falls back to line-based chunking on parse errors or when no
-    top-level definitions exist.
-    """
-    try:
-        tree = ast.parse(content)
-    except SyntaxError:
-        return _chunk_by_lines(file_path, content)
-
-    imports = _extract_imports(content)
+def _fallback_chunk_by_lines(content: str, chunk_size: int = 50, overlap: int = 5) -> List[Dict[str, Any]]:
+    """Fallback line-based chunking for unsupported languages or errors."""
     lines = content.splitlines()
-    file_hash = hashlib.sha256(content.encode()).hexdigest()
-
     chunks: List[Dict[str, Any]] = []
-
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            continue
-
-        start_line = node.lineno - 1  # 0-indexed
-        end_line = getattr(node, "end_lineno", start_line + 20)
-        chunk_content = "\n".join(lines[start_line:end_line])
-
-        calls = [
-            n.func.id
-            for n in ast.walk(node)
-            if isinstance(n, ast.Call) and hasattr(n.func, "id")
-        ]
-
-        chunk_type = "class" if isinstance(node, ast.ClassDef) else "function"
-
-        chunks.append(
-            {
-                "content": chunk_content,
-                "type": chunk_type,
-                "name": node.name,
-                "line_start": node.lineno,
-                "line_end": end_line,
-                "path": str(file_path),
-                "imports": imports,
-                "calls": list(set(calls)),
-                "docstring": ast.get_docstring(node) or "",
-                "file_hash": file_hash,
-            }
-        )
-
-    if not chunks:
-        return _chunk_by_lines(file_path, content)
-
-    return chunks
-
-
-def _chunk_by_lines(
-    file_path: Path,
-    content: str,
-    size: int = config.CHUNK_SIZE_LINES,
-    overlap: int = config.CHUNK_OVERLAP_LINES,
-) -> List[Dict[str, Any]]:
-    """Chunk any source file by line count with overlap (fallback for non-Python)."""
-    lines = content.splitlines()
-    file_hash = hashlib.sha256(content.encode()).hexdigest()
-    chunks: List[Dict[str, Any]] = []
-    step = max(1, size - overlap)
-
+    step = max(1, chunk_size - overlap)
+    
     for i in range(0, len(lines), step):
-        end = min(i + size, len(lines))
+        end = min(i + chunk_size, len(lines))
         chunk_content = "\n".join(lines[i:end])
-        chunks.append(
-            {
-                "content": chunk_content,
-                "type": "block",
-                "name": "",
-                "line_start": i + 1,
-                "line_end": end,
-                "path": str(file_path),
-                "imports": [],
-                "calls": [],
-                "docstring": "",
-                "file_hash": file_hash,
-            }
-        )
-        if end == len(lines):
-            break
-
+        
+        chunks.append({
+            "text": chunk_content,
+            "type": "block",
+            "name": "",
+            "line_start": i + 1,
+            "line_end": end,
+            "start": i,
+            "end": end,
+        })
+    
     return chunks
-
-
-def chunk_file(file_path: Path, content: str) -> List[Dict[str, Any]]:
-    """Dispatch to the best chunking strategy for the given file."""
-    if file_path.suffix == ".py":
-        return _chunk_by_ast(file_path, content)
-    return _chunk_by_lines(file_path, content)
 
 
 def _get_client(db_path: Optional[Path] = None) -> chromadb.PersistentClient:
     """Create or reuse a Chroma persistent client."""
     if db_path is None:
         db_path = config.get_chroma_db_path()
-    db_path = Path(db_path)
-    db_path.mkdir(parents=True, exist_ok=True)
+    else:
+        db_path.mkdir(parents=True, exist_ok=True)
     return chromadb.PersistentClient(path=str(db_path))
 
 
@@ -191,24 +306,14 @@ def index_codebase(
     embedding_provider: Optional[EmbeddingProvider] = None,
     collection_name: str = "codebase-rag",
 ) -> int:
-    """Index all supported files under `root` into ChromaDB.
+    """Index all supported files under `root` into ChromaDB using tree-sitter chunking.
 
-    Performs incremental indexing: files whose content hash matches the
-    existing index entry are skipped, avoiding redundant re-embedding.
-
-    Returns the number of new/updated chunks written.
+    Returns number of chunks indexed.
     """
     root = root.resolve()
     provider = embedding_provider or EmbeddingProvider()
     client = _get_client(db_path)
     collection = _get_collection(client, collection_name)
-
-    # Build a map of the latest known file_hash per path for incremental check.
-    existing = collection.get(include=["metadatas"])
-    existing_hashes: Dict[str, str] = {}
-    for meta in (existing.get("metadatas") or []):
-        if meta and meta.get("path") and meta.get("file_hash"):
-            existing_hashes[meta["path"]] = meta["file_hash"]
 
     documents: List[str] = []
     metadatas: List[Dict[str, Any]] = []
@@ -216,40 +321,28 @@ def index_codebase(
 
     for file_path in _iter_source_files(root):
         try:
-            content = file_path.read_text(encoding="utf-8", errors="ignore")
+            text = file_path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
 
-        file_hash = hashlib.sha256(content.encode()).hexdigest()
-        path_str = str(file_path)
-
-        # Skip files whose content hasn't changed since last index.
-        if existing_hashes.get(path_str) == file_hash:
-            continue
-
-        # Remove stale chunks so we don't accumulate duplicates.
-        try:
-            collection.delete(where={"path": path_str})
-        except Exception:
-            pass
-
-        for idx, chunk in enumerate(chunk_file(file_path, content)):
-            documents.append(chunk["content"])
+        # Use tree-sitter chunking
+        file_extension = file_path.suffix
+        chunks = _chunk_by_treesitter(text, file_extension)
+        
+        for idx, chunk in enumerate(chunks):
+            documents.append(chunk["text"])
             metadatas.append(
                 {
-                    "path": path_str,
-                    "line_start": chunk["line_start"],
-                    "line_end": chunk["line_end"],
-                    "type": chunk.get("type", "block"),
+                    "path": str(file_path),
+                    "start": chunk.get("start", 0),
+                    "end": chunk.get("end", 0),
+                    "type": chunk.get("type", ""),
                     "name": chunk.get("name", ""),
-                    "docstring": chunk.get("docstring", ""),
-                    "file_hash": chunk["file_hash"],
-                    # ChromaDB metadata values must be scalars; join lists
-                    "imports": ",".join(chunk.get("imports", [])),
-                    "calls": ",".join(chunk.get("calls", [])),
+                    "line_start": chunk.get("line_start", 0),
+                    "line_end": chunk.get("line_end", 0),
                 }
             )
-            ids.append(f"{path_str}:{chunk['line_start']}:{idx}")
+            ids.append(f"{file_path}:{idx}")
 
     if not documents:
         return 0
@@ -260,6 +353,7 @@ def index_codebase(
     for i in range(0, len(documents), batch_size):
         batch_docs = documents[i : i + batch_size]
         batch_embeddings = provider.encode(batch_docs)
+        # Ensure 2D numpy array, then convert to list
         if not isinstance(batch_embeddings, np.ndarray):
             batch_embeddings = np.array(batch_embeddings)
         if batch_embeddings.ndim == 1:
@@ -272,8 +366,6 @@ def index_codebase(
         ids=ids,
         embeddings=embeddings,
     )
-
-    registry.update_registry(collection_name, str(root))
 
     return len(documents)
 
@@ -310,115 +402,101 @@ def search_codebase(
     db_path: Optional[Path] = None,
     collection_name: str = "codebase-rag",
     embedding_provider: Optional[EmbeddingProvider] = None,
-) -> List[Dict[str, Any]]:
-    """Search indexed codebase and return ranked matches."""
+) -> Dict[str, Any]:
+    """Search indexed codebase using hybrid dense + sparse search with RRF."""
+    start_time = time.time()
+    
     provider = embedding_provider or EmbeddingProvider()
     client = _get_client(db_path)
     collection = _get_collection(client, collection_name)
 
+    # 1. Dense search (ChromaDB)
     query_embedding = provider.encode([query])
     if not isinstance(query_embedding, np.ndarray):
         query_embedding = np.array(query_embedding)
     if query_embedding.ndim == 1:
         query_embedding = query_embedding.reshape(1, -1)
 
-    result = collection.query(
+    dense_result = collection.query(
         query_embeddings=query_embedding.astype("float32").tolist(),
-        n_results=top_k * 2,  # fetch extra candidates for reranking
+        n_results=top_k * 2,  # fetch extra candidates for RRF
         include=["documents", "metadatas", "distances"],
     )
 
-    documents = result.get("documents", [[]])[0]
-    metadatas = result.get("metadatas", [[]])[0]
-    distances = result.get("distances", [[]])[0]
+    dense_documents = dense_result.get("documents", [[]])[0]
+    dense_metadatas = dense_result.get("metadatas", [[]])[0]
+    dense_distances = dense_result.get("distances", [[]])[0]
 
-    matches: List[Dict[str, Any]] = []
-    for doc, meta, dist in zip(documents, metadatas, distances):
-        path = (meta or {}).get("path", "")
-        score = float(1.0 - float(dist))
-        matches.append(
-            {
-                "path": path,
-                "score": score,
-                "content": doc,
-                "line_start": (meta or {}).get("line_start"),
-                "line_end": (meta or {}).get("line_end"),
-                "type": (meta or {}).get("type", "block"),
-                "name": (meta or {}).get("name", ""),
-                "docstring": (meta or {}).get("docstring", ""),
-            }
+    # Prepare dense results for RRF
+    dense_results = []
+    for i, (doc, meta, dist) in enumerate(zip(dense_documents, dense_metadatas, dense_distances)):
+        dense_results.append({
+            "chunk_index": i,
+            "path": (meta or {}).get("path", ""),
+            "content": doc,
+            "score": float(1.0 - float(dist)),  # convert distance to similarity
+        })
+
+    # 2. Sparse search (BM25)
+    sparse_results = []
+    try:
+        # Get all chunks for BM25 indexing
+        all_chunks = []
+        for meta in collection.get(include=["metadatas"]).get("metadatas", []):
+            if meta:
+                chunk_text = collection.get(
+                    ids=[meta.get("path", "unknown")],
+                    include=["documents"]
+                ).get("documents", [""])[0]
+                all_chunks.append({
+                    "text": chunk_text,
+                    "path": meta.get("path", ""),
+                })
+        
+        if all_chunks and BM25Okapi is not None:
+            # Create BM25 index
+            bm25_index = BM25Index()
+            bm25_index.index(all_chunks)
+            
+            # Search BM25
+            sparse_results = bm25_index.search(query, top_k * 2)
+    except Exception:
+        sparse_results = []
+
+    # 3. RRF fusion
+    # Reconstruct chunks list for RRF (simplified approach)
+    chunks_for_rrf = []
+    for i, (doc, meta) in enumerate(zip(dense_documents, dense_metadatas)):
+        if meta:
+            chunks_for_rrf.append({
+                "text": doc,
+                "path": meta.get("path", ""),
+                "type": meta.get("type", ""),
+                "name": meta.get("name", ""),
+                "line_start": meta.get("line_start", 0),
+                "line_end": meta.get("line_end", 0),
+            })
+
+    # Apply RRF
+    if sparse_results:
+        fused_results = reciprocal_rank_fusion(
+            dense_results, sparse_results, chunks_for_rrf, k=60, top_k=top_k
         )
+    else:
+        # Fallback to dense-only if BM25 fails
+        fused_results = dense_results[:top_k]
 
-    keywords = _extract_keywords(query)
-    matches = _rerank(matches, keywords)
-    return matches[:top_k]
+    query_time_ms = (time.time() - start_time) * 1000
+    
+    return {
+        "results": fused_results,
+        "total_indexed_chunks": len(collection.get(include=["metadatas"]).get("metadatas", [])),
+        "query_time_ms": round(query_time_ms, 2),
+        "search_type": "hybrid_rrf" if sparse_results else "dense_only",
+    }
 
 
-def get_file_content(path: str, project: Optional[str] = None) -> str:
-    """Read and return the full content of a file from disk.
-
-    When *project* is supplied the path is validated against that collection;
-    a ``ValueError`` is raised if the path is not found in the index.
-    """
-    if project is not None:
-        client = _get_client()
-        collection = _get_collection(client, project)
-        result = collection.get(where={"path": path}, include=["metadatas"])
-        if not (result.get("metadatas") or []):
-            raise ValueError(f"Path '{path}' not found in project '{project}'")
+def get_file_content(path: str) -> str:
+    """Read and return the full content of a file from disk."""
     file_path = Path(path)
     return file_path.read_text(encoding="utf-8", errors="ignore")
-
-
-_STOPWORDS: frozenset = frozenset([
-    "the", "a", "an", "in", "is", "it", "of", "to", "and", "or", "for",
-    "where", "how", "what", "which", "with", "that", "this", "from", "on",
-    "at", "by", "are", "was", "were", "be", "been", "being", "have", "has",
-    "had", "do", "does", "did", "will", "would", "could", "should", "may",
-    "might", "can", "not", "no", "so", "if", "my", "we", "they", "he",
-    "she", "you", "use", "used", "its", "get", "all", "new", "into",
-])
-
-
-def _extract_keywords(query: str) -> List[str]:
-    """Extract significant keywords from a query string."""
-    words = re.findall(r"\b[a-zA-Z_][a-zA-Z0-9_]*\b", query.lower())
-    seen: dict = {}
-    result: List[str] = []
-    for w in words:
-        if w not in _STOPWORDS and len(w) > 2 and w not in seen:
-            seen[w] = True
-            result.append(w)
-    return result
-
-
-def _rerank(
-    matches: List[Dict[str, Any]], keywords: List[str]
-) -> List[Dict[str, Any]]:
-    """Boost and re-sort results using keyword heuristics."""
-    if not keywords or not matches:
-        return matches
-
-    scored: List[tuple] = []
-    for match in matches:
-        score = match["score"]
-        name = (match.get("name") or "").lower()
-        docstring = (match.get("docstring") or "").lower()
-
-        # +30% per keyword found in symbol name (per spec rerank heuristics)
-        name_hits = sum(1 for kw in keywords if kw in name)
-        score *= 1 + 0.3 * name_hits
-
-        # +10% per keyword in docstring
-        doc_hits = sum(1 for kw in keywords if kw in docstring)
-        score *= 1 + 0.1 * doc_hits
-
-        # small boost when docstring exists at all (documented = reliable)
-        if match.get("docstring"):
-            score *= 1.05
-
-        scored.append((score, match))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [m for _, m in scored]
-
