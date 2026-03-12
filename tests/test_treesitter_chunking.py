@@ -154,3 +154,13 @@ class TestFallbackChunking:
             assert "line_end" in chunk
             assert chunk["type"] == "block"
             assert chunk["name"] == ""
+
+    def test_fallback_large_file(self):
+        """Test fallback for files larger than 500KB."""
+        # Create content larger than 500KB
+        content = "line\n" * 60000  # ~600KB
+        chunks = _chunk_by_treesitter(content, ".py")
+        
+        # Should fallback to line-based chunking for large files
+        assert len(chunks) > 0
+        assert all(c["type"] == "block" for c in chunks)

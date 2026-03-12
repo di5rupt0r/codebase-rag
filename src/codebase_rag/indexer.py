@@ -195,6 +195,11 @@ def _chunk_by_treesitter(content: str, file_extension: str) -> List[Dict[str, An
     if Language is None or Parser is None or get_language is None:
         return _fallback_chunk_by_lines(content)
     
+    # Check file size for controlled fallback
+    content_size = len(content.encode('utf-8'))
+    if content_size > 500 * 1024:  # 500KB threshold
+        return _fallback_chunk_by_lines(content)
+    
     # Get language from file extension
     lang_name = _EXTENSION_MAP.get(file_extension.lower())
     if not lang_name:
