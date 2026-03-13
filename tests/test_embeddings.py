@@ -294,3 +294,91 @@ class TestUniXCoderEmbeddingProvider:
         result = provider.encode(["def foo():", "class Bar:", "import os"])
 
         assert result.shape == (batch, hidden_size)
+
+
+class TestLazyLoading:
+    """Test lazy loading functionality for embeddings."""
+
+    @patch("codebase_rag.embeddings.SentenceTransformer")
+    @patch("codebase_rag.embeddings.torch")
+    def test_get_embedding_model_singleton(self, mock_torch, mock_st):
+        """Test get_embedding_model uses @lru_cache singleton."""
+        from codebase_rag.embeddings import get_embedding_model
+        
+        mock_torch.cuda.is_available.return_value = False
+        mock_model = Mock()
+        mock_st.return_value = mock_model
+        
+        # First call should create model
+        result1 = get_embedding_model("test-model")
+        mock_st.assert_called_once_with("test-model", device="cpu")
+        
+        # Second call should use cache (no new instantiation)
+        result2 = get_embedding_model("test-model")
+        mock_st.assert_called_once()  # Still only called once
+        
+        assert result1 is result2  # Same object from cache
+
+    @patch("codebase_rag.embeddings.AutoModel")
+    @patch("codebase_rag.embeddings.AutoTokenizer")
+    @patch("codebase_rag.embeddings.torch")
+    def test_get_transformer_model_singleton(self, mock_torch, mock_automodel, mock_autotok):
+        """Test get_transformer_model uses @lru_cache singleton."""
+        from codebase_rag.embeddings import get_transformer_model
+        
+        mock_torch.cuda.is_available.return_value = True
+        mock_tokenizer = Mock()
+        mock_transformer = Mock()
+        mock_autotok.from_pretrained.return_value = mock_tokenizer
+        mock_automodel.from_pretrained.return_value = mock_transformer
+        
+        # First call should create models
+        result1 = get_transformer_model("test-model")
+        mock_autotok.from_pretrained.assert_called_once_with("test-model")
+        mock_automodel.from_pretrained.assert_called_once_with("test-model")
+        
+        # Second call should use cache
+        result2 = get_transformer_model("test-model")
+        mock_autotok.from_pretrained.assert_called_once()  # Still only called once
+        mock_automodel.from_pretrained.assert_called_once()  # Still only called once
+        
+        assert result1 == result2  # Same objects from cache
+
+    @patch("codebase_rag.embeddings.get_embedding_model")
+    def test_lazy_loading_in_provider(self, mock_get_model):
+        """Test EmbeddingProvider uses lazy loading."""
+        from codebase_rag.embeddings import EmbeddingProvider
+        
+        mock_model = Mock()
+        mock_get_model.return_value = mock_model
+        
+        provider = EmbeddingProvider("test-model")
+        
+        # Models should NOT be loaded during initialization
+        assert provider._backend is None
+        assert provider._model is None
+        mock_get_model.assert_not_called()
+        
+        # Models should be loaded only when encode() is called
+        provider.encode("test text")
+        mock_get_model.assert_called_once_with("test-model")
+
+    @patch("codebase_rag.embeddings.get_embedding_model")
+    def test_cache_info_monitoring(self, mock_get_model):
+        """Test cache info is available for monitoring."""
+        from codebase_rag.embeddings import EmbeddingProvider
+        from codebase_rag.embeddings import get_embedding_model
+        
+        mock_model = Mock()
+        mock_get_model.return_value = mock_model
+        
+        # Call multiple times to populate cache
+        get_embedding_model("test-model")
+        get_embedding_model("test-model")
+        get_embedding_model("test-model")
+        
+        cache_info = EmbeddingProvider.get_cache_info()
+        
+        assert "embedding_model_cache" in cache_info
+        assert "transformer_model_cache" in cache_info
+        # Check that cache info is accessible (not exact values due to mocking)
