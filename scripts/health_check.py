@@ -38,7 +38,8 @@ def check_search_functionality() -> bool:
     try:
         # Try a search query
         results = search_codebase(query="test", top_k=1)
-        return isinstance(results, list)
+        res_list = results.get("results") if isinstance(results, dict) else results
+        return isinstance(res_list, list)
     except Exception as e:
         print(f"❌ Search functionality check failed: {e}")
         return False

@@ -178,15 +178,24 @@ def reciprocal_rank_fusion(
 
 def _iter_source_files(root: Path) -> Iterable[Path]:
     """Yield all supported, non-ignored files under given root."""
+    import os
     root = root.resolve()
-    for path in root.rglob("*"):
-        if path.is_dir():
-            continue
-        if not config.is_supported_file(path):
-            continue
-        if config.should_ignore_path(path):
-            continue
-        yield path
+    for dirpath, dirnames, filenames in os.walk(root):
+        current_dir = Path(dirpath)
+        
+        # Prune ignored directories in-place so os.walk doesn't enter them
+        dirnames[:] = [
+            d for d in dirnames 
+            if not config.should_ignore_path(current_dir / d)
+        ]
+        
+        for filename in filenames:
+            file_path = current_dir / filename
+            if not config.is_supported_file(file_path):
+                continue
+            if config.should_ignore_path(file_path):
+                continue
+            yield file_path
 
 
 def _chunk_by_treesitter(content: str, file_extension: str) -> List[Dict[str, Any]]:
