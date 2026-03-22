@@ -4,6 +4,7 @@ import hashlib
 import re
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, List, Dict, Any, Optional
 
@@ -46,12 +47,11 @@ _EXTENSION_MAP = {
 
 _CHUNK_NODE_TYPES = {
     "function_definition",
-    "method_definition", 
+    "method_definition",
     "class_definition",
     "async_function_definition",
     "async_method_definition",
     "decorated_definition",
-    "module",
 }
 
 
@@ -75,11 +75,10 @@ class BM25Index:
     def index(self, chunks: List[Dict[str, Any]]) -> None:
         """Index chunks for BM25 search."""
         self.chunks = chunks
-        # Extract text content from chunks
+        if not chunks:
+            return  # guard: BM25Okapi raises ZeroDivisionError on empty corpus
         corpus = [chunk.get("text", "") for chunk in chunks]
-        # Tokenize corpus
         self.tokenized_corpus = [self._tokenize(doc) for doc in corpus]
-        # Create BM25 index
         self.bm25 = BM25Okapi(self.tokenized_corpus)
     
     def search(self, query: str, top_k: int = 10) -> List[tuple[int, float]]:
@@ -304,13 +303,19 @@ def _fallback_chunk_by_lines(content: str, chunk_size: int = 50, overlap: int = 
     return chunks
 
 
-def _get_client(db_path: Optional[Path] = None) -> chromadb.PersistentClient:
-    """Create or reuse a Chroma persistent client."""
+@lru_cache(maxsize=8)
+def _get_client(db_path_str: str) -> chromadb.PersistentClient:
+    """Singleton ChromaDB client keyed by path string."""
+    db_path = Path(db_path_str)
+    db_path.mkdir(parents=True, exist_ok=True)
+    return chromadb.PersistentClient(path=db_path_str)
+
+
+def _resolve_client(db_path: Optional[Path] = None) -> chromadb.PersistentClient:
+    """Resolve db_path to a cached PersistentClient."""
     if db_path is None:
         db_path = config.get_chroma_db_path()
-    else:
-        db_path.mkdir(parents=True, exist_ok=True)
-    return chromadb.PersistentClient(path=str(db_path))
+    return _get_client(str(db_path))
 
 
 def _get_collection(
@@ -333,7 +338,7 @@ def index_codebase(
     """
     root = root.resolve()
     provider = embedding_provider or EmbeddingProvider()
-    client = _get_client(db_path)
+    client = _resolve_client(db_path)
     collection = _get_collection(client, collection_name)
 
     documents: List[str] = []
@@ -397,7 +402,7 @@ def list_indexed_files(
     collection_name: str = "codebase-rag",
 ) -> List[Dict[str, Any]]:
     """Return a list of unique indexed files with basic metadata."""
-    client = _get_client(db_path)
+    client = _resolve_client(db_path)
     collection = _get_collection(client, collection_name)
 
     results = collection.get(include=["metadatas"])
@@ -428,7 +433,7 @@ def search_codebase(
     start_time = time.time()
     
     provider = embedding_provider or EmbeddingProvider()
-    client = _get_client(db_path)
+    client = _resolve_client(db_path)
     collection = _get_collection(client, collection_name)
 
     # 1. Dense search (ChromaDB)
@@ -458,29 +463,22 @@ def search_codebase(
             "score": float(1.0 - float(dist)),  # convert distance to similarity
         })
 
-    # 2. Sparse search (BM25)
+    # 2. Sparse search (BM25) — single bulk fetch, O(n) not O(n²)
     sparse_results = []
     try:
-        # Get all chunks for BM25 indexing
-        all_chunks = []
-        for meta in collection.get(include=["metadatas"]).get("metadatas", []):
-            if meta:
-                chunk_text = collection.get(
-                    ids=[meta.get("path", "unknown")],
-                    include=["documents"]
-                ).get("documents", [""])[0]
-                all_chunks.append({
-                    "text": chunk_text,
-                    "path": meta.get("path", ""),
-                })
-        
-        if all_chunks and BM25Okapi is not None:
-            # Create BM25 index
-            bm25_index = BM25Index()
-            bm25_index.index(all_chunks)
-            
-            # Search BM25
-            sparse_results = bm25_index.search(query, top_k * 2)
+        if BM25Okapi is not None:
+            bulk = collection.get(include=["documents", "metadatas"])
+            bulk_docs = bulk.get("documents") or []
+            bulk_metas = bulk.get("metadatas") or []
+            all_chunks = [
+                {"text": doc, "path": (meta or {}).get("path", "")}
+                for doc, meta in zip(bulk_docs, bulk_metas)
+                if doc
+            ]
+            if all_chunks:
+                bm25_index = BM25Index()
+                bm25_index.index(all_chunks)
+                sparse_results = bm25_index.search(query, top_k * 2)
     except Exception:
         sparse_results = []
 
@@ -517,7 +515,12 @@ def search_codebase(
     }
 
 
-def get_file_content(path: str) -> str:
-    """Read and return the full content of a file from disk."""
+def get_file_content(path: str, *, project: Optional[str] = None) -> str:
+    """Read and return the full content of a file from disk.
+    
+    Args:
+        path: Absolute path to the file.
+        project: Unused — reserved for future path-membership validation.
+    """
     file_path = Path(path)
     return file_path.read_text(encoding="utf-8", errors="ignore")

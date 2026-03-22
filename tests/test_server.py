@@ -115,7 +115,7 @@ class TestReindexProject:
         assert "does not exist" in result["error"]
         assert result["time_seconds"] == 0
 
-    @patch("codebase_rag.server._get_client")
+    @patch("codebase_rag.server._resolve_client")
     @patch("codebase_rag.server._index_codebase")
     @patch("codebase_rag.server._list_indexed_files")
     def test_reindex_project_with_force(self, mock_list_files, mock_index, mock_get_client):
@@ -149,7 +149,7 @@ class TestReindexProject:
 class TestListIndexedProjects:
     """Test list_indexed_projects MCP tool."""
 
-    @patch("codebase_rag.server._get_client")
+    @patch("codebase_rag.server._resolve_client")
     def test_list_indexed_projects_basic(self, mock_get_client):
         """Test project listing enumerates real ChromaDB collections."""
         mock_client = Mock()
@@ -177,7 +177,7 @@ class TestListIndexedProjects:
         assert project["files"] == 2   # unique paths
         assert project["chunks"] == 3  # total metadata entries
 
-    @patch("codebase_rag.server._get_client")
+    @patch("codebase_rag.server._resolve_client")
     def test_list_indexed_projects_empty(self, mock_get_client):
         """Test listing with no indexed collections."""
         mock_client = Mock()
@@ -189,7 +189,7 @@ class TestListIndexedProjects:
         assert result["total_projects"] == 0
         assert result["projects"] == []
 
-    @patch("codebase_rag.server._get_client")
+    @patch("codebase_rag.server._resolve_client")
     def test_list_indexed_projects_error(self, mock_get_client):
         """Test error handling in project listing."""
         mock_get_client.side_effect = Exception("Connection failed")
@@ -289,7 +289,7 @@ class TestGetFilesRequiresProject:
 class TestListIndexedProjectsShowsPath:
     """Bug 3 — list_indexed_projects must return the real path from the registry."""
 
-    @patch("codebase_rag.server._get_client")
+    @patch("codebase_rag.server._resolve_client")
     @patch("codebase_rag.server.registry.get_project_path")
     def test_path_comes_from_registry(self, mock_get_path, mock_get_client):
         """list_indexed_projects must call registry.get_project_path and return the result."""
@@ -309,7 +309,7 @@ class TestListIndexedProjectsShowsPath:
         assert result["projects"][0]["path"] == "/real/project/path"
         mock_get_path.assert_called_once_with("my-project")
 
-    @patch("codebase_rag.server._get_client")
+    @patch("codebase_rag.server._resolve_client")
     @patch("codebase_rag.server.registry.get_project_path")
     def test_path_is_na_when_not_in_registry(self, mock_get_path, mock_get_client):
         """When a collection is not in the registry, path falls back to 'N/A'."""

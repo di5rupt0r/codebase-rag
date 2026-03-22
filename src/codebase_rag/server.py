@@ -13,7 +13,7 @@ from .indexer import (
     list_indexed_files as _list_indexed_files,
     get_file_content as _get_file_content,
     index_codebase as _index_codebase,
-    _get_client,
+    _resolve_client,
 )
 
 _host = os.environ.get("MCP_HOST", "127.0.0.1")
@@ -127,7 +127,7 @@ def reindex_project(
         # If force is True, delete existing collection before re-indexing
         if force:
             try:
-                client = _get_client()
+                client = _resolve_client()
                 client.delete_collection(name=collection_name)
             except Exception:
                 # Collection might not exist — ignore
@@ -170,7 +170,7 @@ def list_indexed_projects() -> Dict[str, Any]:
         Dictionary with list of indexed projects and their metadata
     """
     try:
-        client = _get_client()
+        client = _resolve_client()
         collections = client.list_collections()
 
         projects = []

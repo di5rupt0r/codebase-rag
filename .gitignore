@@ -14,3 +14,4 @@ data/chroma_db/
 
 # Systemd service file — contains machine-specific paths; use the .template instead
 systemd/codebase-rag-server.service
+.vscode/settings.json

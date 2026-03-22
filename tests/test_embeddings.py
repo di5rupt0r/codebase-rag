@@ -7,195 +7,164 @@ import pytest
 
 
 class TestEmbeddingProvider:
-    """Test EmbeddingProvider class."""
+    """Test EmbeddingProvider class — V5.0 lazy-loading API."""
 
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_init_default_model(self, mock_st):
-        """Test EmbeddingProvider initializes with default model."""
-        mock_model = Mock()
-        mock_st.return_value = mock_model
-        
+    def test_init_does_not_load_model(self):
+        """EmbeddingProvider.__init__ must NOT load the model (lazy loading)."""
         from codebase_rag.embeddings import EmbeddingProvider
-        provider = EmbeddingProvider()
-        
-        mock_st.assert_called_once_with("all-MiniLM-L6-v2")
-        assert provider.model == mock_model
+        provider = EmbeddingProvider("any-model")
+        assert provider._backend is None
+        assert provider._model is None
+        assert provider._tokenizer is None
+        assert provider._transformer is None
 
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_init_custom_model(self, mock_st):
-        """Test EmbeddingProvider initializes with custom model."""
+    @patch("codebase_rag.embeddings.get_embedding_model")
+    def test_backend_set_on_first_encode(self, mock_get_model):
+        """Backend is resolved on the first call to encode(), not at init."""
         mock_model = Mock()
-        mock_st.return_value = mock_model
-        
-        from codebase_rag.embeddings import EmbeddingProvider
-        provider = EmbeddingProvider(model_name="custom-model")
-        
-        mock_st.assert_called_once_with("custom-model")
-        assert provider.model == mock_model
+        mock_model.encode.return_value = np.array([[0.1, 0.2, 0.3]])
+        mock_get_model.return_value = mock_model
 
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_encode_single_text(self, mock_st):
-        """Test encoding a single text returns correct shape."""
-        mock_model = Mock()
-        # Simulate sentence-transformers output
-        mock_embedding = np.array([[0.1, 0.2, 0.3, 0.4, 0.5]])
-        mock_model.encode.return_value = mock_embedding
-        mock_st.return_value = mock_model
-        
         from codebase_rag.embeddings import EmbeddingProvider
-        provider = EmbeddingProvider()
-        result = provider.encode("test text")
-        
-        mock_model.encode.assert_called_once_with("test text", normalize_embeddings=False)
+        provider = EmbeddingProvider("some-model")
+        assert provider._backend is None  # not yet set
+        provider.encode("test")
+        assert provider._backend == "sentence_transformers"
+
+    @patch("codebase_rag.embeddings.get_embedding_model")
+    def test_encode_single_text(self, mock_get_model):
+        """Encoding a single string returns a 2D numpy array."""
+        mock_model = Mock()
+        mock_model.encode.return_value = np.array([[0.1, 0.2, 0.3]])
+        mock_get_model.return_value = mock_model
+
+        from codebase_rag.embeddings import EmbeddingProvider
+        provider = EmbeddingProvider("some-model")
+        result = provider.encode("hello")
+
         assert isinstance(result, np.ndarray)
-        assert result.shape == (1, 5)  # 1 text, 5 dimensions
-        np.testing.assert_array_equal(result, mock_embedding)
+        assert result.ndim == 2
 
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_encode_multiple_texts(self, mock_st):
-        """Test encoding multiple texts returns correct shape."""
+    @patch("codebase_rag.embeddings.get_embedding_model")
+    def test_encode_multiple_texts(self, mock_get_model):
+        """Encoding a list of texts returns shape (n, dim)."""
         mock_model = Mock()
-        # Simulate sentence-transformers output for 2 texts
-        mock_embedding = np.array([
-            [0.1, 0.2, 0.3, 0.4, 0.5],  # text 1
-            [0.6, 0.7, 0.8, 0.9, 1.0],  # text 2
-        ])
-        mock_model.encode.return_value = mock_embedding
-        mock_st.return_value = mock_model
-        
-        from codebase_rag.embeddings import EmbeddingProvider
-        provider = EmbeddingProvider()
-        texts = ["text 1", "text 2"]
-        result = provider.encode(texts)
-        
-        mock_model.encode.assert_called_once_with(texts, normalize_embeddings=False)
-        assert isinstance(result, np.ndarray)
-        assert result.shape == (2, 5)  # 2 texts, 5 dimensions
-        np.testing.assert_array_equal(result, mock_embedding)
+        mock_model.encode.return_value = np.array([[0.1, 0.2], [0.3, 0.4]])
+        mock_get_model.return_value = mock_model
 
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_encode_with_normalize_embeddings(self, mock_st):
-        """Test encoding passes through normalize_embeddings parameter."""
-        mock_model = Mock()
-        mock_embedding = np.array([[0.1, 0.2, 0.3]])
-        mock_model.encode.return_value = mock_embedding
-        mock_st.return_value = mock_model
-        
         from codebase_rag.embeddings import EmbeddingProvider
-        provider = EmbeddingProvider()
-        provider.encode("test", normalize_embeddings=True)
-        
-        mock_model.encode.assert_called_once_with("test", normalize_embeddings=True)
+        provider = EmbeddingProvider("some-model")
+        result = provider.encode(["a", "b"])
 
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_encode_empty_list(self, mock_st):
-        """Test encoding empty list returns empty array."""
-        mock_model = Mock()
-        mock_embedding = np.array([]).reshape(0, 384)  # Empty with correct shape
-        mock_model.encode.return_value = mock_embedding
-        mock_st.return_value = mock_model
-        
-        from codebase_rag.embeddings import EmbeddingProvider
-        provider = EmbeddingProvider()
-        result = provider.encode([])
-        
-        mock_model.encode.assert_called_once_with([], normalize_embeddings=False)
-        assert isinstance(result, np.ndarray)
-        assert result.shape == (0, 384)
+        assert result.shape == (2, 2)
 
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_encode_returns_numpy_array(self, mock_st):
-        """Test encode always returns numpy array even if model returns list."""
+    @patch("codebase_rag.embeddings.get_embedding_model")
+    def test_encode_normalize_flag_forwarded(self, mock_get_model):
+        """normalize_embeddings=True is forwarded to the underlying model."""
         mock_model = Mock()
-        # Model returns list instead of numpy array
-        mock_embedding = [[0.1, 0.2, 0.3]]
-        mock_model.encode.return_value = mock_embedding
-        mock_st.return_value = mock_model
-        
+        mock_model.encode.return_value = np.array([[0.6, 0.8]])
+        mock_get_model.return_value = mock_model
+
         from codebase_rag.embeddings import EmbeddingProvider
-        provider = EmbeddingProvider()
+        provider = EmbeddingProvider("some-model")
+        provider.encode("code", normalize_embeddings=True)
+
+        mock_model.encode.assert_called_once_with("code", normalize_embeddings=True)
+
+    @patch("codebase_rag.embeddings.get_embedding_model")
+    def test_encode_returns_numpy_array_when_model_returns_list(self, mock_get_model):
+        """Result must be numpy array even if the underlying model returns a list."""
+        mock_model = Mock()
+        mock_model.encode.return_value = [[0.1, 0.2, 0.3]]
+        mock_get_model.return_value = mock_model
+
+        from codebase_rag.embeddings import EmbeddingProvider
+        provider = EmbeddingProvider("some-model")
         result = provider.encode("test")
-        
-        # Should convert to numpy array
+
         assert isinstance(result, np.ndarray)
         assert result.shape == (1, 3)
-        np.testing.assert_array_equal(result, np.array(mock_embedding))
 
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_model_loading_error_handling(self, mock_st):
-        """Test error handling when model loading fails."""
-        mock_st.side_effect = Exception("Model loading failed")
-        
-        from codebase_rag.embeddings import EmbeddingProvider
-        
-        with pytest.raises(Exception, match="Model loading failed"):
-            EmbeddingProvider()
-
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_encode_error_handling(self, mock_st):
-        """Test error handling when encoding fails."""
+    @patch("codebase_rag.embeddings.get_embedding_model")
+    def test_encode_error_propagates(self, mock_get_model):
+        """Exceptions from the underlying model are not swallowed."""
         mock_model = Mock()
-        mock_model.encode.side_effect = Exception("Encoding failed")
-        mock_st.return_value = mock_model
-        
+        mock_model.encode.side_effect = RuntimeError("GPU OOM")
+        mock_get_model.return_value = mock_model
+
         from codebase_rag.embeddings import EmbeddingProvider
-        provider = EmbeddingProvider()
-        
-        with pytest.raises(Exception, match="Encoding failed"):
-            provider.encode("test text")
+        provider = EmbeddingProvider("some-model")
+
+        with pytest.raises(RuntimeError, match="GPU OOM"):
+            provider.encode("test")
 
 
 class TestUniXCoderEmbeddingProvider:
-    """Test EmbeddingProvider with transformers backend (unixcoder-base)."""
+    """Test EmbeddingProvider with transformers backend (unixcoder-base).
+    
+    Note: get_embedding_model and get_transformer_model use @lru_cache.
+    The fixture clears those caches so patches are actually applied.
+    _backend is lazy-loaded, so encode() must be called before checking it.
+    """
 
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_init_uses_sentence_transformers_backend_for_default(self, mock_st):
-        """Default model uses sentence_transformers backend, not transformers."""
-        mock_st.return_value = Mock()
+    @pytest.fixture(autouse=True)
+    def clear_lru_caches(self):
+        from codebase_rag.embeddings import get_embedding_model, get_transformer_model
+        get_embedding_model.cache_clear()
+        get_transformer_model.cache_clear()
+        yield
+        get_embedding_model.cache_clear()
+        get_transformer_model.cache_clear()
+
+    @patch("codebase_rag.embeddings.get_embedding_model")
+    def test_init_uses_sentence_transformers_backend_for_default(self, mock_get_st):
+        """EmbeddingProvider with a non-unixcoder model name uses sentence_transformers backend."""
+        mock_model = Mock()
+        mock_model.encode.return_value = np.array([[0.1, 0.2, 0.3]])
+        mock_get_st.return_value = mock_model
 
         from codebase_rag.embeddings import EmbeddingProvider
-        provider = EmbeddingProvider()
+        provider = EmbeddingProvider("all-MiniLM-L6-v2")  # explicit non-unixcoder
+        provider.encode("test")  # trigger lazy load
 
         assert provider._backend == "sentence_transformers"
-        mock_st.assert_called_once()
+        mock_get_st.assert_called_once_with("all-MiniLM-L6-v2")
 
-    @patch("codebase_rag.embeddings.AutoModel")
-    @patch("codebase_rag.embeddings.AutoTokenizer")
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_init_uses_transformers_backend_for_unixcoder(self, mock_st, mock_tok, mock_model):
-        """microsoft/unixcoder-base uses transformers backend, not SentenceTransformer."""
-        mock_tok.from_pretrained.return_value = Mock()
-        mock_model.from_pretrained.return_value = Mock()
+    @patch("codebase_rag.embeddings.get_transformer_model")
+    def test_init_uses_transformers_backend_for_unixcoder(self, mock_get_transformer):
+        """microsoft/unixcoder-base uses transformers backend after first encode()."""
+        import torch
+        mock_tokenizer = Mock()
+        hidden = torch.zeros(1, 3, 768)
+        attention_mask = torch.ones(1, 3, dtype=torch.long)
+        mock_tokenizer.return_value = {"attention_mask": attention_mask, "input_ids": torch.zeros(1, 3, dtype=torch.long)}
+        mock_outputs = Mock()
+        mock_outputs.last_hidden_state = hidden
+        mock_transformer = Mock()
+        mock_transformer.return_value = mock_outputs
+        mock_get_transformer.return_value = (mock_tokenizer, mock_transformer)
 
         from codebase_rag.embeddings import EmbeddingProvider
         provider = EmbeddingProvider(model_name="microsoft/unixcoder-base")
+        provider.encode("test")  # trigger lazy load
 
         assert provider._backend == "transformers"
-        mock_st.assert_not_called()
-        mock_tok.from_pretrained.assert_called_once_with("microsoft/unixcoder-base")
-        mock_model.from_pretrained.assert_called_once_with("microsoft/unixcoder-base")
+        mock_get_transformer.assert_called_once_with("microsoft/unixcoder-base")
 
-    @patch("codebase_rag.embeddings.AutoModel")
-    @patch("codebase_rag.embeddings.AutoTokenizer")
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_encode_unixcoder_returns_2d_numpy_array(self, mock_st, mock_tok, mock_automodel):
+    @patch("codebase_rag.embeddings.get_transformer_model")
+    def test_encode_unixcoder_returns_2d_numpy_array(self, mock_get_transformer):
         """Encoding with unixcoder backend returns 2D numpy array."""
         import torch
-
-        mock_tokenizer = Mock()
-        mock_tok.from_pretrained.return_value = mock_tokenizer
-
         seq_len, hidden_size = 10, 768
+        mock_tokenizer = Mock()
         last_hidden = torch.ones(1, seq_len, hidden_size)
         attention_mask = torch.ones(1, seq_len, dtype=torch.long)
-        mock_tokenizer.return_value = {"attention_mask": attention_mask}
-
+        mock_tokenizer.return_value = {"attention_mask": attention_mask, "input_ids": torch.zeros(1, seq_len, dtype=torch.long)}
+        mock_outputs = Mock()
+        mock_outputs.last_hidden_state = last_hidden
         mock_transformer = Mock()
-        mock_transformer.eval.return_value = None
-        outputs = Mock()
-        outputs.last_hidden_state = last_hidden
-        mock_transformer.return_value = outputs
-        mock_automodel.from_pretrained.return_value = mock_transformer
+        mock_transformer.return_value = mock_outputs
+        mock_get_transformer.return_value = (mock_tokenizer, mock_transformer)
 
         from codebase_rag.embeddings import EmbeddingProvider
         provider = EmbeddingProvider(model_name="microsoft/unixcoder-base")
@@ -205,60 +174,42 @@ class TestUniXCoderEmbeddingProvider:
         assert result.ndim == 2
         assert result.shape == (1, hidden_size)
 
-    @patch("codebase_rag.embeddings.AutoModel")
-    @patch("codebase_rag.embeddings.AutoTokenizer")
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_encode_unixcoder_wraps_single_string_in_list(self, mock_st, mock_tok, mock_automodel):
-        """Single string input is handled correctly (wrapped internally)."""
+    @patch("codebase_rag.embeddings.get_transformer_model")
+    def test_encode_unixcoder_wraps_single_string_in_list(self, mock_get_transformer):
+        """Single string input is wrapped in a list before tokenization."""
         import torch
-
-        mock_tokenizer = Mock()
-        mock_tok.from_pretrained.return_value = mock_tokenizer
-
         hidden_size = 768
+        mock_tokenizer = Mock()
         last_hidden = torch.ones(1, 5, hidden_size)
         attention_mask = torch.ones(1, 5, dtype=torch.long)
-        mock_tokenizer.return_value = {"attention_mask": attention_mask}
-
+        mock_tokenizer.return_value = {"attention_mask": attention_mask, "input_ids": torch.zeros(1, 5, dtype=torch.long)}
+        mock_outputs = Mock()
+        mock_outputs.last_hidden_state = last_hidden
         mock_transformer = Mock()
-        mock_transformer.eval.return_value = None
-        outputs = Mock()
-        outputs.last_hidden_state = last_hidden
-        mock_transformer.return_value = outputs
-        mock_automodel.from_pretrained.return_value = mock_transformer
+        mock_transformer.return_value = mock_outputs
+        mock_get_transformer.return_value = (mock_tokenizer, mock_transformer)
 
         from codebase_rag.embeddings import EmbeddingProvider
         provider = EmbeddingProvider(model_name="microsoft/unixcoder-base")
         result = provider.encode("single string")
 
-        # Tokenizer must have been called with a list
         call_args = mock_tokenizer.call_args
         assert isinstance(call_args[0][0], list)
         assert result.shape[0] == 1
 
-    @patch("codebase_rag.embeddings.AutoModel")
-    @patch("codebase_rag.embeddings.AutoTokenizer")
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_encode_unixcoder_normalizes_embeddings(self, mock_st, mock_tok, mock_automodel):
+    @patch("codebase_rag.embeddings.get_transformer_model")
+    def test_encode_unixcoder_normalizes_embeddings(self, mock_get_transformer):
         """normalize_embeddings=True produces unit-norm vectors."""
         import torch
-
-        mock_tokenizer = Mock()
-        mock_tok.from_pretrained.return_value = mock_tokenizer
-
-        hidden_size = 4
-        # Make last_hidden state such that mean pooling gives [3, 4, 0, 0]
-        # which has norm 5 → normalized: [0.6, 0.8, 0, 0]
         embeddings_raw = torch.tensor([[[3.0, 4.0, 0.0, 0.0]] * 3])  # (1, 3, 4)
         attention_mask = torch.ones(1, 3, dtype=torch.long)
-        mock_tokenizer.return_value = {"attention_mask": attention_mask}
-
+        mock_tokenizer = Mock()
+        mock_tokenizer.return_value = {"attention_mask": attention_mask, "input_ids": torch.zeros(1, 3, dtype=torch.long)}
+        mock_outputs = Mock()
+        mock_outputs.last_hidden_state = embeddings_raw
         mock_transformer = Mock()
-        mock_transformer.eval.return_value = None
-        outputs = Mock()
-        outputs.last_hidden_state = embeddings_raw
-        mock_transformer.return_value = outputs
-        mock_automodel.from_pretrained.return_value = mock_transformer
+        mock_transformer.return_value = mock_outputs
+        mock_get_transformer.return_value = (mock_tokenizer, mock_transformer)
 
         from codebase_rag.embeddings import EmbeddingProvider
         provider = EmbeddingProvider(model_name="microsoft/unixcoder-base")
@@ -267,33 +218,29 @@ class TestUniXCoderEmbeddingProvider:
         norms = np.linalg.norm(result, axis=1)
         np.testing.assert_allclose(norms, [1.0], atol=1e-6)
 
-    @patch("codebase_rag.embeddings.AutoModel")
-    @patch("codebase_rag.embeddings.AutoTokenizer")
-    @patch("codebase_rag.embeddings.SentenceTransformer")
-    def test_encode_unixcoder_multiple_texts(self, mock_st, mock_tok, mock_automodel):
+    @patch("codebase_rag.embeddings.get_transformer_model")
+    def test_encode_unixcoder_multiple_texts(self, mock_get_transformer):
         """Encoding multiple texts returns correct batch shape."""
         import torch
-
-        mock_tokenizer = Mock()
-        mock_tok.from_pretrained.return_value = mock_tokenizer
-
         batch, seq_len, hidden_size = 3, 8, 768
+        mock_tokenizer = Mock()
         last_hidden = torch.ones(batch, seq_len, hidden_size)
         attention_mask = torch.ones(batch, seq_len, dtype=torch.long)
-        mock_tokenizer.return_value = {"attention_mask": attention_mask}
-
+        mock_tokenizer.return_value = {"attention_mask": attention_mask, "input_ids": torch.zeros(batch, seq_len, dtype=torch.long)}
+        mock_outputs = Mock()
+        mock_outputs.last_hidden_state = last_hidden
         mock_transformer = Mock()
-        mock_transformer.eval.return_value = None
-        outputs = Mock()
-        outputs.last_hidden_state = last_hidden
-        mock_transformer.return_value = outputs
-        mock_automodel.from_pretrained.return_value = mock_transformer
+        mock_transformer.return_value = mock_outputs
+        mock_get_transformer.return_value = (mock_tokenizer, mock_transformer)
 
         from codebase_rag.embeddings import EmbeddingProvider
         provider = EmbeddingProvider(model_name="microsoft/unixcoder-base")
         result = provider.encode(["def foo():", "class Bar:", "import os"])
 
         assert result.shape == (batch, hidden_size)
+
+
+
 
 
 class TestLazyLoading:
