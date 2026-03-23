@@ -399,8 +399,8 @@ def index_codebase(
     total_batches = (len(documents) + batch_size - 1) // batch_size
     
     import time
+    start_time = time.time()
     for batch_i in range(total_batches):
-        t0 = time.time()
         start_idx = batch_i * batch_size
         end_idx = start_idx + batch_size
         batch_tuples = indexed_docs[start_idx:end_idx]
@@ -417,7 +417,9 @@ def index_codebase(
         for obj_idx, (orig_i, _) in enumerate(batch_tuples):
             embeddings[orig_i] = batch_emb_list[obj_idx]
             
-        logger.info(f"Embedded batch {batch_i + 1}/{total_batches} in {time.time() - t0:.2f}s")
+        elapsed = time.time() - start_time
+        progress_pct = ((batch_i + 1) / total_batches) * 100
+        logger.info(f"Indexing progress: {progress_pct:.1f}% ({batch_i + 1}/{total_batches} batches) - Elapsed: {elapsed:.1f}s")
 
     logger.info(f"Adding {len(documents)} documents to ChromaDB collection...")
     collection.add(

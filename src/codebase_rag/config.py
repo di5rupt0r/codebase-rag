@@ -21,10 +21,28 @@ IGNORED_PATTERNS: List[str] = [
     "__pycache__",
     ".git",
     "node_modules",
+    "vendor",
+    "packages",
+    "Packages",
     ".venv",
     "venv",
+    "env",
+    ".env",
+    ".tox",
+    "build",
+    "dist",
+    "target",
+    "bin",
+    "obj",
+    "out",
+    ".idea",
+    ".vscode",
+    ".vs",
     "*.egg-info",
     ".pytest_cache",
+    ".mypy_cache",
+    ".coverage",
+    "htmlcov",
 ]
 
 SUPPORTED_EXTENSIONS: List[str] = [
@@ -97,7 +115,7 @@ def should_ignore_path(path: Path) -> bool:
                     return True
         else:
             # Exact match for directory names
-            if pattern in path_str.split("/"):
+            if pattern in path.parts:
                 return True
     
     return False
