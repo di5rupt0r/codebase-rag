@@ -124,11 +124,14 @@ def reindex_project(
         
         collection_name = project_name
         
-        # If force is True, delete existing collection before re-indexing
+        # If force is True, delete existing collection contents before re-indexing
         if force:
             try:
                 client = _resolve_client()
-                client.delete_collection(name=collection_name)
+                collection = client.get_or_create_collection(name=collection_name)
+                existing = collection.get()
+                if existing and existing.get("ids"):
+                    collection.delete(ids=existing["ids"])
             except Exception:
                 # Collection might not exist — ignore
                 pass

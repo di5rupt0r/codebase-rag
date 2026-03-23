@@ -15,9 +15,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from codebase_rag import config
 from codebase_rag.indexer import (
     EmbeddingProvider,
-    _get_client,
+    _resolve_client,
     _get_collection,
-    chunk_file,
+    _chunk_by_treesitter,
 )
 
 
@@ -30,7 +30,7 @@ def reindex_files(project_name: str, files: list[str]) -> None:
         return
 
     provider = EmbeddingProvider()
-    client = _get_client()
+    client = _resolve_client()
     collection = _get_collection(client, project_name)
 
     for path_str in code_files:
@@ -57,27 +57,32 @@ def reindex_files(project_name: str, files: list[str]) -> None:
 
             # Remove stale chunks and re-embed
             collection.delete(where={"path": str(file_path)})
-            chunks = chunk_file(file_path, content)
+            chunks = _chunk_by_treesitter(content, file_path.suffix)
             if not chunks:
                 continue
 
-            docs = [c["content"] for c in chunks]
+            docs = [c["text"] for c in chunks]
             chunk_metas = [
                 {
                     "path": str(file_path),
-                    "line_start": c["line_start"],
-                    "line_end": c["line_end"],
+                    "line_start": c.get("line_start", 0),
+                    "line_end": c.get("line_end", 0),
                     "type": c.get("type", "block"),
                     "name": c.get("name", ""),
-                    "docstring": c.get("docstring", ""),
                     "file_hash": file_hash,
-                    "imports": ",".join(c.get("imports", [])),
-                    "calls": ",".join(c.get("calls", [])),
                 }
                 for c in chunks
             ]
-            embeddings = provider.encode(docs).astype("float32").tolist()
-            ids = [f"{file_path}:{c['line_start']}:{i}" for i, c in enumerate(chunks)]
+            
+            # encode output handling to ensure 2D float list
+            batch_embeddings = provider.encode(docs)
+            if not isinstance(batch_embeddings, np.ndarray):
+                batch_embeddings = np.array(batch_embeddings)
+            if batch_embeddings.ndim == 1:
+                batch_embeddings = batch_embeddings.reshape(1, -1)
+            embeddings = batch_embeddings.astype("float32").tolist()
+            
+            ids = [f"{file_path}:{i}" for i in range(len(chunks))]
             collection.add(documents=docs, metadatas=chunk_metas, ids=ids, embeddings=embeddings)
             print(f"Reindexed {file_path.name} — {len(chunks)} chunk(s)")
 

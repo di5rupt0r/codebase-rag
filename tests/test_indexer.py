@@ -274,6 +274,7 @@ class TestIndexCodebase:
     @patch("codebase_rag.indexer._resolve_client")
     @patch("codebase_rag.indexer._get_collection")
     def test_index_basic(self, mock_collection, mock_client, mock_provider):
+        from codebase_rag.indexer import index_codebase
         mock_provider_instance = Mock()
         mock_provider.return_value = mock_provider_instance
         mock_provider_instance.encode.return_value = [[0.1, 0.2, 0.3]]
@@ -287,6 +288,50 @@ class TestIndexCodebase:
             result = index_codebase(tmp_path)
             assert result >= 1
             mock_collection_instance.add.assert_called_once()
+
+    @patch("codebase_rag.indexer.EmbeddingProvider")
+    @patch("codebase_rag.indexer._resolve_client")
+    @patch("codebase_rag.indexer._get_collection")
+    def test_index_codebase_logs_and_sorts(self, mock_collection, mock_client, mock_provider, caplog):
+        """Test that indexing logs progress and sorts documents by length before batching."""
+        import logging
+        import numpy as np
+        from codebase_rag.indexer import index_codebase
+        caplog.set_level(logging.INFO, logger="codebase_rag")
+        
+        mock_provider_instance = Mock()
+        mock_provider.return_value = mock_provider_instance
+        # Mock returns 1 embedding per document passed
+        mock_provider_instance.encode.side_effect = lambda docs: np.random.rand(len(docs), 768)
+
+        mock_collection_instance = Mock()
+        mock_collection.return_value = mock_collection_instance
+
+        with TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            (tmp_path / "long.py").write_text("def long_func():\n" + "    pass\n" * 50)
+            (tmp_path / "short.py").write_text("def short(): pass")
+            
+            result = index_codebase(tmp_path)
+            
+            assert result >= 2
+            mock_collection_instance.add.assert_called_once()
+            
+            # Assert that logging telemetry worked
+            log_messages = [r.message for r in caplog.records]
+            assert any("Chunked files into" in msg for msg in log_messages)
+            assert any("Embedded batch" in msg for msg in log_messages)
+            assert any("Adding" in msg and "documents to ChromaDB" in msg for msg in log_messages)
+            
+            # Extract how encode was called
+            calls = mock_provider_instance.encode.call_args_list
+            assert len(calls) > 0
+            
+            # The very first batch should contain the shortest documents
+            first_batch_docs = calls[0][0][0]
+            # Verify the shortest document (short.py) comes before long.py in the sorted batching
+            lengths = [len(doc) for doc in first_batch_docs]
+            assert lengths == sorted(lengths), "Documents within batch should be sorted by length"
 
     @patch("codebase_rag.indexer.EmbeddingProvider")
     @patch("codebase_rag.indexer._resolve_client")

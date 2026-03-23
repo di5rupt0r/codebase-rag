@@ -124,14 +124,19 @@ class TestReindexProject:
         mock_get_client.return_value = mock_client
         mock_index.return_value = 5
         mock_list_files.return_value = [{"path": "file1.py"}]
+        
+        mock_collection = Mock()
+        mock_client.get_or_create_collection.return_value = mock_collection
+        mock_collection.get.return_value = {"ids": ["id1", "id2"]}
 
         with TemporaryDirectory() as tmp_dir:
             result = reindex_project(tmp_dir, "test-project", force=True)
 
             assert result["status"] == "success"
             assert result["force_used"] is True
-            # delete_collection must have been attempted
-            mock_client.delete_collection.assert_called_once_with(name="test-project")
+            # Avoid the sqlite buggy drop and ensure we do collection clearing
+            mock_client.delete_collection.assert_not_called()
+            mock_collection.delete.assert_called_once_with(ids=["id1", "id2"])
 
     @patch("codebase_rag.server._index_codebase")
     def test_reindex_project_error_handling(self, mock_index):

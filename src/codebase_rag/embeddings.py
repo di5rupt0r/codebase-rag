@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from sentence_transformers import SentenceTransformer
 from transformers import AutoModel, AutoTokenizer
+from huggingface_hub import snapshot_download
 
 from . import config
 
@@ -31,9 +32,25 @@ def get_embedding_model(model_name: str) -> SentenceTransformer:
 @lru_cache(maxsize=1)
 def get_transformer_model(model_name: str):
     """Singleton thread-safe transformer model loader."""
+    import transformers
+    transformers.utils.logging.set_verbosity_error()
+    
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    local_files_only = False
+    try:
+        # Check HF Hub for updates and download if needed
+        snapshot_download(repo_id=model_name)
+    except Exception:
+        # If offline or network error, fallback strictly to local cache
+        local_files_only = True
+
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    transformer = AutoModel.from_pretrained(model_name)
+    transformer = AutoModel.from_pretrained(
+        model_name,
+        ignore_mismatched_sizes=True,
+        local_files_only=local_files_only
+    )
     transformer = transformer.to(device)  # Ensure device assignment
     return tokenizer, transformer
 

@@ -25,8 +25,11 @@ try:
 except ImportError:
     BM25Okapi = None
 
+import logging
 from . import config
 from .embeddings import EmbeddingProvider
+
+logger = logging.getLogger("codebase_rag")
 
 
 # Tree-sitter configuration
@@ -380,27 +383,50 @@ def index_codebase(
             ids.append(f"{file_path}:{idx}")
 
     if not documents:
+        logger.warning(f"No valid code found to index in {root}")
         return 0
+        
+    logger.info(f"Chunked files into {len(documents)} items. Generating embeddings...")
 
     # Compute embeddings in batches to keep memory usage reasonable.
-    embeddings: List[List[float]] = []
-    batch_size = 64
-    for i in range(0, len(documents), batch_size):
-        batch_docs = documents[i : i + batch_size]
+    # To optimize CPU attention (O(N^2)) padding, we sort documents by length,
+    # batch them, and then map the embeddings back to their original order.
+    indexed_docs = list(enumerate(documents))
+    indexed_docs.sort(key=lambda x: len(x[1]))
+    
+    embeddings: List[List[float]] = [[] for _ in range(len(documents))]
+    batch_size = 16  # Reduced from 64 to prevent CPU memory/attention thrashing
+    total_batches = (len(documents) + batch_size - 1) // batch_size
+    
+    import time
+    for batch_i in range(total_batches):
+        t0 = time.time()
+        start_idx = batch_i * batch_size
+        end_idx = start_idx + batch_size
+        batch_tuples = indexed_docs[start_idx:end_idx]
+        batch_docs = [t[1] for t in batch_tuples]
+        
         batch_embeddings = provider.encode(batch_docs)
-        # Ensure 2D numpy array, then convert to list
         if not isinstance(batch_embeddings, np.ndarray):
             batch_embeddings = np.array(batch_embeddings)
         if batch_embeddings.ndim == 1:
             batch_embeddings = batch_embeddings.reshape(1, -1)
-        embeddings.extend(batch_embeddings.astype("float32").tolist())
+            
+        batch_emb_list = batch_embeddings.astype("float32").tolist()
+        
+        for obj_idx, (orig_i, _) in enumerate(batch_tuples):
+            embeddings[orig_i] = batch_emb_list[obj_idx]
+            
+        logger.info(f"Embedded batch {batch_i + 1}/{total_batches} in {time.time() - t0:.2f}s")
 
+    logger.info(f"Adding {len(documents)} documents to ChromaDB collection...")
     collection.add(
         documents=documents,
         metadatas=metadatas,
         ids=ids,
         embeddings=embeddings,
     )
+    logger.info("ChromaDB addition complete.")
 
     return len(documents)
 

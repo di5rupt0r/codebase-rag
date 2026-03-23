@@ -239,6 +239,55 @@ class TestUniXCoderEmbeddingProvider:
 
         assert result.shape == (batch, hidden_size)
 
+    @patch("codebase_rag.embeddings.AutoModel.from_pretrained")
+    @patch("codebase_rag.embeddings.AutoTokenizer.from_pretrained")
+    @patch("codebase_rag.embeddings.snapshot_download")
+    def test_get_transformer_model_suppresses_warnings_and_checks_cache(
+        self, mock_snapshot, mock_tokenizer, mock_automodel
+    ):
+        """Test get_transformer_model suppresses warnings, checks snapshot, and uses local_files_only."""
+        from codebase_rag.embeddings import get_transformer_model
+        
+        mock_snapshot.return_value = "/mock/path"
+        mock_automodel.return_value = Mock()
+        mock_automodel.return_value.to.return_value = Mock()
+        
+        with patch("transformers.utils.logging.set_verbosity_error") as mock_set_verbosity:
+            tokenizer, transformer = get_transformer_model("microsoft/unixcoder-base")
+            
+            # Assert verbosity suppression
+            mock_set_verbosity.assert_called_once()
+            
+            # Assert snapshot_download was called to checking for updates
+            mock_snapshot.assert_called_once()
+            _, kwargs = mock_snapshot.call_args
+            assert kwargs.get("repo_id") == "microsoft/unixcoder-base"
+            
+            # Assert AutoModel instantiated with ignore_mismatched_sizes and local_files_only=False
+            mock_automodel.assert_called_once()
+            _, kwargs = mock_automodel.call_args
+            assert kwargs.get("ignore_mismatched_sizes") is True
+            assert kwargs.get("local_files_only") is False
+
+    @patch("codebase_rag.embeddings.AutoModel.from_pretrained")
+    @patch("codebase_rag.embeddings.AutoTokenizer.from_pretrained")
+    @patch("codebase_rag.embeddings.snapshot_download", side_effect=Exception("Network error"))
+    def test_get_transformer_model_fallback_on_network_error(
+        self, mock_snapshot, mock_tokenizer, mock_automodel
+    ):
+        """Test that if snapshot_download fails (offline), it loads local_files_only."""
+        from codebase_rag.embeddings import get_transformer_model
+        
+        mock_automodel.return_value = Mock()
+        mock_automodel.return_value.to.return_value = Mock()
+        
+        tokenizer, transformer = get_transformer_model("microsoft/unixcoder-base")
+        
+        mock_snapshot.assert_called_once()
+        mock_automodel.assert_called_once()
+        _, kwargs = mock_automodel.call_args
+        assert kwargs.get("local_files_only") is True
+
 
 
 
@@ -266,13 +315,15 @@ class TestLazyLoading:
         
         assert result1 is result2  # Same object from cache
 
+    @patch("codebase_rag.embeddings.snapshot_download")
     @patch("codebase_rag.embeddings.AutoModel")
     @patch("codebase_rag.embeddings.AutoTokenizer")
     @patch("codebase_rag.embeddings.torch")
-    def test_get_transformer_model_singleton(self, mock_torch, mock_automodel, mock_autotok):
+    def test_get_transformer_model_singleton(self, mock_torch, mock_autotok, mock_automodel, mock_snapshot):
         """Test get_transformer_model uses @lru_cache singleton."""
         from codebase_rag.embeddings import get_transformer_model
         
+        mock_snapshot.return_value = "/mock/path"
         mock_torch.cuda.is_available.return_value = True
         mock_tokenizer = Mock()
         mock_transformer = Mock()
@@ -282,7 +333,9 @@ class TestLazyLoading:
         # First call should create models
         result1 = get_transformer_model("test-model")
         mock_autotok.from_pretrained.assert_called_once_with("test-model")
-        mock_automodel.from_pretrained.assert_called_once_with("test-model")
+        mock_automodel.from_pretrained.assert_called_once_with(
+            "test-model", ignore_mismatched_sizes=True, local_files_only=False
+        )
         
         # Second call should use cache
         result2 = get_transformer_model("test-model")
