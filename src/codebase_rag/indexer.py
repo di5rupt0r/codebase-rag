@@ -183,20 +183,31 @@ def _iter_source_files(root: Path) -> Iterable[Path]:
     """Yield all supported, non-ignored files under given root."""
     import os
     root = root.resolve()
+    
+    custom_ignores = []
+    ragignore_path = root / ".ragignore"
+    if ragignore_path.exists():
+        try:
+            lines = ragignore_path.read_text(encoding="utf-8").splitlines()
+            custom_ignores = [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
+            logger.info(f"Loaded {len(custom_ignores)} custom patterns from .ragignore")
+        except Exception as e:
+            logger.warning(f"Failed to read .ragignore: {e}")
+
     for dirpath, dirnames, filenames in os.walk(root):
         current_dir = Path(dirpath)
         
         # Prune ignored directories in-place so os.walk doesn't enter them
         dirnames[:] = [
             d for d in dirnames 
-            if not config.should_ignore_path(current_dir / d)
+            if not config.should_ignore_path(current_dir / d, custom_ignores)
         ]
         
         for filename in filenames:
             file_path = current_dir / filename
             if not config.is_supported_file(file_path):
                 continue
-            if config.should_ignore_path(file_path):
+            if config.should_ignore_path(file_path, custom_ignores):
                 continue
             yield file_path
 

@@ -97,25 +97,34 @@ def is_supported_file(file_path: Path) -> bool:
     return file_path.suffix.lower() in SUPPORTED_EXTENSIONS
 
 
-def should_ignore_path(path: Path) -> bool:
-    """Check if path should be ignored based on patterns."""
+import fnmatch
+
+def should_ignore_path(path: Path, custom_patterns: List[str] = None) -> bool:
+    """Check if path should be ignored based on global and custom patterns."""
     path_str = str(path)
+    patterns = IGNORED_PATTERNS + (custom_patterns or [])
     
-    for pattern in IGNORED_PATTERNS:
+    for pattern in patterns:
         # Simple pattern matching - handles directory names and simple wildcards
         if "*" in pattern:
             # Handle wildcard patterns (e.g., "*.pyc")
-            if pattern.endswith("*"):
+            if pattern.endswith("*") and not pattern.startswith("*"):
                 # Prefix match (e.g., "__pycache__*")
                 if path_str.startswith(pattern.rstrip("*")):
                     return True
-            elif pattern.startswith("*"):
+            elif pattern.startswith("*") and not pattern.endswith("*"):
                 # Suffix match (e.g., "*.pyc")
                 if path_str.endswith(pattern.lstrip("*")):
+                    return True
+            else:
+                # Standard fnmatch for generic wildcards
+                if fnmatch.fnmatch(path_str, f"*/{pattern}*") or fnmatch.fnmatch(path.name, pattern):
                     return True
         else:
             # Exact match for directory names
             if pattern in path.parts:
+                return True
+            if path.name == pattern:
                 return True
     
     return False

@@ -574,3 +574,36 @@ class TestIndexCodesbaseWritesRegistry:
 
         called_path = mock_update_registry.call_args[0][1]
         assert Path(called_path).is_absolute()
+
+@patch("codebase_rag.indexer.EmbeddingProvider")
+@patch("codebase_rag.indexer._resolve_client")
+@patch("codebase_rag.indexer._get_collection")
+def test_index_codebase_with_ragignore(mock_collection, mock_client, mock_provider):
+    from codebase_rag.indexer import index_codebase
+    mock_provider_instance = Mock()
+    mock_provider.return_value = mock_provider_instance
+    mock_provider_instance.encode.side_effect = lambda docs: [[0.1] * 768] * len(docs)
+
+    mock_collection_instance = Mock()
+    mock_collection.return_value = mock_collection_instance
+
+    with TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        
+        # Create standard files
+        (tmp_path / "valid.py").write_text("def hello(): pass")
+        
+        # Create a custom directory that SHOULD be ignored
+        custom_dir = tmp_path / "test_venv"
+        custom_dir.mkdir()
+        (custom_dir / "ignored.py").write_text("def bad(): pass")
+        
+        # Create .ragignore pointing to test_venv
+        (tmp_path / ".ragignore").write_text("test_venv\n# test comment\n")
+        
+        result = index_codebase(tmp_path)
+        
+        # The result chunk count should only reflect valid.py (1 chunk).
+        # Without the feature, it will parse ignored.py too and return 2 chunks.
+        assert result == 1, f"Expected 1 chunk, got {result}. .ragignore likely failed."
+        mock_collection_instance.add.assert_called_once()
