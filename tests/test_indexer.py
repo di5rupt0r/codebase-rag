@@ -320,7 +320,7 @@ class TestIndexCodebase:
             # Assert that logging telemetry worked
             log_messages = [r.message for r in caplog.records]
             assert any("Chunked files into" in msg for msg in log_messages)
-            assert any("Embedded batch" in msg for msg in log_messages)
+            assert any("Indexing progress" in msg for msg in log_messages)
             assert any("Adding" in msg and "documents to ChromaDB" in msg for msg in log_messages)
             
             # Extract how encode was called
